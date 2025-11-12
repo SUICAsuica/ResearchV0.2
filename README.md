@@ -62,6 +62,25 @@ python3 webcar.py            # 毎回：Flask サーバ（デフォルト 5000 �
 
 ---
 
+## 拠点別 IP と環境切り替え
+
+- 2025-11-12 時点の静的 IP は **自宅 = `192.168.0.12` / 研究室 = `192.168.11.11`** です。
+- それぞれの環境で `AGENT_URL` / `CAM_URL` / `BASE_URL` を取り違えないよう、`env.home.sh` と `env.lab.sh` を用意しました。作業前に `source` してください。
+
+```bash
+# 自宅（192.168.0.12）で direct 制御を試す例
+source env.home.sh
+make pc-direct
+
+# 研究室（192.168.11.11）で hybrid 制御を試す例
+source env.lab.sh
+make pc-hybrid
+```
+
+- スクリプトは `cam`/`base`/`agent` それぞれに現在の IP を埋め込むだけなので、値を変えたら README と `Agents.md` の更新履歴に日付付きで記録してください。
+
+---
+
 ## 研究用 3 スクリプトの要点
 
 | 役割 | ファイル | 主な機能 |
