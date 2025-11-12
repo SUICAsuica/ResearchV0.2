@@ -1,16 +1,16 @@
 # Osoyoo Raspberry Pi Car Bridge (2023)
 
 本リポジトリは、OSOYOO Raspberry Pi Robot Car（2023年版 Lesson 1 / Lesson 6）に合わせて、  
-**「ラズパイ側で映像配信と制御エージェントを走らせ、Mac側で VLM 推論・意思決定を行う」** 構成を支援するためのメモとツール群です。  
-教材どおりの `webcar.py`/MJPEG 連携に加えて、卒研テーマ *「小型移動ロボットにおける VLM ダイレクト制御とハイブリッド制御の比較評価」* を実験できる 3 つのスクリプト（raspi_agent / pc_controller_direct / pc_controller_hybrid）を提供します。
+**「ラズパイ側で映像配信と制御エージェント（`raspi_agent.py`）を走らせ、Mac 側で VLM 推論・意思決定を行う」** 構成を支援するためのメモとツール群です。  
+研究タスクでは 8080 番ポートの `raspi_agent` + `pc_controller_direct` / `pc_controller_hybrid` をメイン経路として使用します。Lesson 6 の `webcar.py` 互換手順は参考情報として末尾にまとめています。
 
 ---
 
 ## アーキテクチャ整理
 
-- **映像**: ラズパイ上で `camera.sh` → `startcam.py`（教材 Lesson 6）を起動し、MJPEG ストリームを `http://<PiのIP>:8899/stream.mjpg` で配信する。
-- **操作**: 同じくラズパイ上で `picar4.sh` → `webcar.py`（Flask アプリ）を起動し、HTTP リクエストで前進／後退／左右／停止／カメラ角度などを受け付ける。
-- **Mac**: 映像ストリームを Pull して VLM 推論 → Flask エンドポイントへ HTTP リクエストで指示を返す。ブラウザで押していたボタン操作を Mac のスクリプトから送るイメージ。
+- **映像＋操作（研究フロー）**: ラズパイ上で `raspi_agent.py` を常駐させ、`http://<PiのIP>:8080/frame.jpg` / `/stream.mjpg` を配信しつつ、`/command` で `FORWARD/LEFT/...` を受け付ける。
+- **映像＋操作（Lesson 6 互換）**: 教材どおり `startcam.py`（8899 番）と `webcar.py`（5000 番）を起動するパターンも維持しており、必要な場合は「Lesson 6 (webcar.py) 互換運用」セクションを参照する。
+- **Mac**: `pc_controller_direct.py` / `pc_controller_hybrid.py` などのクライアントが `AGENT_URL`（8080 番）へリクエストを送り、ブラウザ操作を人手で行っていた部分を自動化する。
 
 研究タスクを進める場合は、以下の 3 コンポーネントをセットで使います。
 
@@ -30,35 +30,36 @@
 2. **起動後の基本セットアップ**  
    - Lesson 1 に従い `sudo raspi-config` で I²C とカメラを有効化（Pi 5 の場合は CSI 22ピン→15ピン変換ケーブルを忘れずに）。  
    - PCA9685 HAT や L298N、サーボの配線を教材図面どおりに確認。
-3. **教材スクリプトの配置**  
-   - Lesson 6 の指示で `camera.sh` / `startcam.py` / `picar4.sh` / `webcar.py` を配置。最新版では `~/osoyoo-robot/` 配下にスクリプトが展開される想定。
+3. **研究用エージェントの配置**  
+   - 本リポジトリ（`raspycar/`）をラズパイにも配置し、`raspi_agent.py` を起動できるようにしておく。Lesson 6 の `camera.sh` / `webcar.py` は互換運用が必要なときだけ導入すればよい（後述）。
 
 ---
 
-## ラズパイで映像とFlask制御を起動
+## ラズパイで `raspi_agent` (8080) を起動
+
+研究フローでは `raspi_agent.py` が映像配信とモータ制御を同時に担当します。Pi に SSH したら次のように起動してください（`make raspi-agent EXTRA_ARGS='...'` で同じコマンドをラップできます）。
 
 ```bash
-# 映像ストリーム
-cd ~/osoyoo-robot
-sudo bash camera.sh          # 初回：依存パッケージ導入
-python3 startcam.py          # 毎回：カメラ配信（8899番ポート）
-
-# Flask 制御
-cd ~/osoyoo-robot
-sudo bash picar4.sh          # 初回：ライブラリ導入
-python3 webcar.py            # 毎回：Flask サーバ（デフォルト 5000 番）
+cd ~/laboratory/Researchv2.0/raspycar
+python3 raspi_agent.py \
+  --bind 0.0.0.0 \
+  --port 8080 \
+  --camera-source 0 \
+  --camera-width 640 --camera-height 480 --camera-fps 2 \
+  --watchdog-timeout 2.0
 ```
 
-ブラウザから `http://<PiのIP>:8899/stream.mjpg` を開いて動画が表示されること、  
-`http://<PiのIP>:5000` にアクセスして教材の操作画面が動くことを Mac から確認しておく。
+- `GET /frame.jpg` / `/stream.mjpg` で最新フレームを取得し、`POST /command {"command": "FORWARD"}` などで操作します。
+- 2 秒間コマンドが来ないと自動で `STOP` を送る WATCHDOG が有効です。実験中も手元で停止コマンドを即送れるようにしておいてください。
+- 旧 `webcar.py` を同時に立ち上げる必要はありません（ポートも競合しません）。Lesson 6 互換フローが必要な場合のみ本 README の末尾セクションを参照してください。
 
 ---
 
 ## Mac 側（本リポジトリ）の役割
 
-- `raspycar.server` は **Flask のボタン操作を HTTP 経由で送る軽量クライアント** です。  
-  既存の VLM 推論ループから呼び出すことで、ブラウザを経由せずに Lesson 6 のエンドポイントへ指示できます。
-- MJPEG の取得や VLM モデル自体はこのリポジトリには含めていません。既存コードから `requests` 等でストリームを Pull してください。
+- `pc_controller_direct.py` / `pc_controller_hybrid.py` が `raspi_agent` (8080) と通信し、VLM 応答をそのままコマンド化する、または VLM 認識＋ルール制御で動かします。
+- `raspycar.server` や `CarClient` など、Lesson 6 の `webcar.py` を直接操作するツールも残してありますが、通常の研究フローでは不要です（利用方法は末尾の互換セクション参照）。
+- MJPEG の取得や VLM モデル本体はこのリポジトリには含めていないため、必要なパッケージは後述のインストール手順に従ってセットアップしてください。
 
 ---
 
@@ -159,6 +160,7 @@ SmolVLM を用いた自律制御ループを使う場合は、追加で以下の
 
 ```bash
 pip install mlx mlx-vlm opencv-python pillow numpy
+```
 
 ### SmolVLM2 モデルの配置
 
@@ -175,7 +177,27 @@ huggingface-cli download mlx-community/SmolVLM2-500M-Video-Instruct-mlx \
 `--smol-model-id ./models/smolvlm2-mlx` を指定すると `raspycar.autopilot` がこのモデルを読み込みます。
 ```
 
-### コマンドライン例
+## Lesson 6 (`webcar.py`) 互換運用（オプション）
+
+8080 番の `raspi_agent` だけで実験が完結する場合、このセクションの手順は不要です。ブラウザ UI や教材の Flask API（5000 番）を維持したいときだけ参照してください。
+
+### ラズパイで Lesson 6 を起動する
+
+```bash
+# 映像ストリーム（8899 番）
+cd ~/osoyoo-robot
+sudo bash camera.sh          # 初回：依存パッケージ導入
+python3 startcam.py          # 毎回：カメラ配信
+
+# Flask 制御（5000 番）
+cd ~/osoyoo-robot
+sudo bash picar4.sh          # 初回：ライブラリ導入
+python3 webcar.py            # 毎回：Flask サーバ
+```
+
+`http://<PiのIP>:8899/stream.mjpg` と `http://<PiのIP>:5000` にアクセスできれば準備完了です。`raspi_agent` と併用してもポートは競合しません。
+
+### コマンドライン例（`raspycar.server`）
 
 ```bash
 # 前進（必要に応じて speed パラメータを付与）
@@ -196,7 +218,7 @@ VLM 連携時は、推論結果に応じて上記コマンド相当の関数を�
 
 ---
 
-## SmolVLM を用いた簡易自律走行
+### SmolVLM を用いた簡易自律走行（`webcar.py` 向け）
 
 `raspycar.autopilot` は MJPEG ストリームを取り込み、SmolVLM モデルで黒いコーヒーボトル（UCC BLACK）の位置を検出しながら Lesson 6 の Flask エンドポイントへ前進／左右／停止コマンドを送るサンプルループです。
 
@@ -232,7 +254,7 @@ python -m raspycar.autopilot \
 
 ---
 
-## 主要関数（VLM から直接呼び出す場合）
+### 主要関数（`CarClient` / `webcar.py`）
 
 ```python
 from raspycar.server import CarClient
@@ -255,13 +277,16 @@ client.set_servo_angle(10)
 
 ## トラブルシュート
 
-- **映像が取得できない**  
-  - `startcam.py` を再起動し、Mac からブラウザで `http://<PiのIP>:8899/stream.mjpg` にアクセスして切り分ける。
-- **HTTP で制御できない**  
-  - Flask (`webcar.py`) が稼働しているかを `ps -ef | grep webcar.py` などで確認。  
-  - `CarClient` の `base_url` が `http://<PiのIP>:5000` になっているか、LAN 内から疎通できるかをチェック。
+- **映像が取得できない / raspi_agent が応答しない**  
+  - `curl http://<PiのIP>:8080/health` で状態を確認し、ログにカメラ初期化エラーが出ていないかチェックする。  
+  - `--camera-source`（USB カメラ番号）や解像度が環境に合っているかを見直し、必要なら `EXTRA_ARGS='--camera-source 1' make raspi-agent` のように上書きする。
+- **8080 へのコマンドが届かない**  
+  - `env.home.sh` / `env.lab.sh` を読みなおして `AGENT_URL` が現在のネットワークになっているか確認する。  
+  - `raspi_agent` の WATCHDOG が STOP を出し続けていないか（`/health` の `last_command` を参照）。
 - **Pi 5 のカメラが認識しない**  
   - 22ピン→15ピン変換ケーブルを用意し、差し込み向きとロックレバーの締め具合を確認。
+- **Lesson 6 (`webcar.py`) を使う場合の追加切り分け**  
+  - `startcam.py` / `webcar.py` の稼働状況、`CarClient` の `base_url`（5000 番）を確認する。詳しくは「Lesson 6 互換運用」セクションを参照。
 
 ---
 
