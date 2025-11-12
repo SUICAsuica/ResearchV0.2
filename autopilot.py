@@ -50,6 +50,7 @@ class SmolVLMDetector:
         user_prompt: str,
         max_new_tokens: int,
         temperature: float,
+        bottom_focus_ratio: float,
     ) -> None:
         try:
             from mlx_vlm.generate import generate as mlx_generate
@@ -66,6 +67,7 @@ class SmolVLMDetector:
         self.model, self.processor = mlx_load(model_id, trust_remote_code=True)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
+        self.bottom_focus_ratio = max(0.2, min(1.0, bottom_focus_ratio))
 
         messages = []
         if system_prompt:
@@ -83,8 +85,17 @@ class SmolVLMDetector:
         """
         BGR フレームを受け取り、ターゲット矩形を推定する。
         """
+        h, w = frame.shape[:2]
+        crop_start = 0
+        crop_height = h
+        if self.bottom_focus_ratio < 0.999:
+            crop_height = max(1, int(h * self.bottom_focus_ratio))
+            crop_start = h - crop_height
+            frame_for_model = frame[crop_start:, :]
+        else:
+            frame_for_model = frame
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(frame_for_model, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb)
 
         try:
@@ -128,7 +139,12 @@ class SmolVLMDetector:
             LOG.debug("信頼度または矩形サイズがゼロ: %s", payload)
             return None
 
-        h, w = frame.shape[:2]
+        if crop_start:
+            # center_y / height_ratio を元のフレーム座標に合わせて補正
+            crop_h_ratio = crop_height / max(h, 1)
+            center_y = ((center_y * crop_height) + crop_start) / max(h, 1)
+            height_ratio *= crop_h_ratio
+
         cx_px = int(center_x * w)
         cy_px = int(center_y * h)
 
@@ -144,14 +160,73 @@ def _extract_json(text: str) -> Optional[dict]:
     import json
     import re
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
+    snippets = re.findall(r"\{.*?\}", text, re.DOTALL)
+    if not snippets:
         return None
-    snippet = match.group(0)
-    try:
-        return json.loads(snippet)
-    except json.JSONDecodeError:
+
+    for snippet in snippets:
+        snippet = snippet.strip()
+        try:
+            return json.loads(snippet)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _detect_dark_bottle(frame: np.ndarray) -> Optional[BoxDetection]:
+    """黒いペットボトルを単純な画素ヒューリスティックで探す。"""
+
+    h, w = frame.shape[:2]
+    if h == 0 or w == 0:
         return None
+
+    roi_top = int(h * 0.1)
+    roi = frame[roi_top:, :]
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    lower = np.array([0, 0, 0], dtype=np.uint8)
+    upper = np.array([180, 150, 200], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = cv2.GaussianBlur(mask, (5, 5), 0)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    frame_area = float(w * h)
+    best = None
+    best_score = 0.0
+    for cnt in contours:
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        area = bw * bh
+        if area < frame_area * 0.001:
+            continue
+        aspect = bh / max(bw, 1)
+        if aspect < 1.2:
+            continue
+        score = area * aspect
+        if score > best_score:
+            best_score = score
+            best = (x, y, bw, bh)
+
+    if best is None:
+        return None
+
+    x, y, bw, bh = best
+    cx_px = x + bw // 2
+    cy_px = roi_top + y + bh // 2
+    width_ratio = bw / w
+    height_ratio = bh / h
+    area_ratio = width_ratio * height_ratio
+    confidence = float(min(1.0, 0.3 + area_ratio * 8 + (best_score / (frame_area * 0.04))))
+
+    return BoxDetection(
+        center=(int(cx_px), int(cy_px)),
+        width_ratio=float(width_ratio),
+        height_ratio=float(height_ratio),
+        confidence=confidence,
+    )
 
 
 class TargetFollower:
@@ -174,6 +249,8 @@ class TargetFollower:
         turn_speed: int,
         poll_sleep: float,
         preview: bool,
+        dark_bottle_heuristic: bool,
+        low_latency: bool,
     ) -> None:
         self._client = client
         self._detector = detector
@@ -187,11 +264,20 @@ class TargetFollower:
         self._turn_speed = int(np.clip(turn_speed, 0, 100))
         self._poll_sleep = max(0.0, poll_sleep)
         self._preview = preview
+        self._dark_bottle_heuristic = dark_bottle_heuristic
+        self._low_latency = low_latency
+        self._latency_flush_frames = 6 if low_latency else 0
 
     def run(self) -> None:
         cap = cv2.VideoCapture(self._camera_url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             raise RuntimeError(f"カメラストリームを開けませんでした: {self._camera_url}")
+        if self._low_latency:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            LOG.info("低遅延モード: VideoCapture バッファを 1 に設定")
+            # 低遅延モードでは追加の待機を極力避ける
+            if self._poll_sleep > 0.0:
+                self._poll_sleep = min(self._poll_sleep, 0.005)
 
         if self._preview:
             cv2.namedWindow("raspycar-preview", cv2.WINDOW_NORMAL)
@@ -205,7 +291,16 @@ class TargetFollower:
 
         try:
             while True:
-                ok, frame = cap.read()
+                if self._low_latency and self._latency_flush_frames > 0:
+                    flushed = 0
+                    while flushed < self._latency_flush_frames and cap.grab():
+                        flushed += 1
+                    if flushed:
+                        ok, frame = cap.retrieve()
+                    else:
+                        ok, frame = cap.read()
+                else:
+                    ok, frame = cap.read()
                 if not ok:
                     LOG.warning("カメラフレームの取得に失敗。再試行します。")
                     time.sleep(0.2)
@@ -227,6 +322,15 @@ class TargetFollower:
                                 self._min_confidence,
                             )
                             candidate = None
+                    if candidate is None and self._dark_bottle_heuristic:
+                        candidate = _detect_dark_bottle(frame)
+                        if candidate:
+                            LOG.debug(
+                                "ダークボトルヒューリスティックで検出: conf=%.2f", candidate.confidence
+                            )
+                            last_detection = candidate
+                            last_detection_ts = now
+
                     if candidate is None and now - last_detection_ts > self._detection_timeout:
                         last_detection = None
 
@@ -323,8 +427,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="smolVLM を用いた Raspberry Pi Car 自律制御",
     )
-    parser.add_argument("--camera-url", required=True, help="MJPEG ストリーム URL 例: http://192.168.11.4:8899/stream.mjpg")
-    parser.add_argument("--base-url", required=True, help="Flask 制御エンドポイント 例: http://192.168.11.4:5000")
+    parser.add_argument("--camera-url", required=True, help="MJPEG ストリーム URL 例: http://192.168.0.12:8899/stream.mjpg")
+    parser.add_argument("--base-url", required=True, help="Flask 制御エンドポイント 例: http://192.168.0.12:5000")
     parser.add_argument("--smol-model-id", default=None, help="mlx-vlm に渡すモデル ID またはパス（省略時は環境変数 SMOL_MODEL_ID を参照）")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -332,29 +436,44 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--system-prompt",
         default=(
             "You are a vision detector for a mobile robot. Respond ONLY with a JSON dict containing keys "
-            "present, confidence, center_x, center_y, box_width, box_height. Detect a bright white card "
-            "with a bold black rectangular border; if uncertain, output present=false."
+            "present, confidence, center_x, center_y, box_width, box_height. Detect a single upright black coffee "
+            "bottle filled with dark liquid, silver cap, yellow circular label reading UCC BLACK. Ignore chairs, "
+            "people, reflections, tables, and everything else. If the bottle is not clearly visible, respond with "
+            "present=false and zeros."
         ),
     )
     parser.add_argument(
         "--user-prompt",
         default=(
-            'Look at the image from the robot. If you clearly see the white card with a thick black border, '
-            'output only JSON like {"present": true, "confidence": 0.85, "center_x": 0.51, "center_y": 0.48, '
-            '"box_width": 0.22, "box_height": 0.18}. '
-            "If it is missing, occluded, or ambiguous, output present=false and zeros for all numeric values."
+            'Analyze the camera view from a floor-level robot. If you clearly see the UCC BLACK coffee bottle '
+            '(glossy black body filled with dark liquid, yellow circular label with the word BLACK/UCC, small silver '
+            'cap), output ONLY JSON such as {"present": true, "confidence": 0.85, "center_x": 0.52, '
+            '"center_y": 0.62, "box_width": 0.20, "box_height": 0.30}. If it is missing, partially out of frame, '
+            'blurred, or ambiguous, output present=false and zeros for all numeric values. Do not add text before or '
+            'after the JSON.'
         ),
     )
-    parser.add_argument("--detection-interval", type=int, default=10, help="何フレームごとに smolVLM を呼ぶか")
+    parser.add_argument(
+        "--bottom-focus-ratio",
+        type=float,
+        default=0.6,
+        help="SmolVLM に渡す画像の下部割合（0.2-1.0）。小さいほど床付近を強調",
+    )
+    parser.add_argument("--detection-interval", type=int, default=6, help="何フレームごとに smolVLM を呼ぶか")
     parser.add_argument("--detection-timeout", type=float, default=3.0, help="推論結果を保持する最大秒数")
     parser.add_argument("--turn-deadzone", type=float, default=0.05, help="正規化中心からのずれがこの範囲なら前進を継続")
-    parser.add_argument("--stop-area-ratio", type=float, default=0.12, help="ターゲット面積がこの割合を超えたら停止")
-    parser.add_argument("--min-confidence", type=float, default=0.85, help="smolVLM 応答を採用する最小信頼度（0-1）")
+    parser.add_argument("--stop-area-ratio", type=float, default=0.08, help="ターゲット面積がこの割合を超えたら停止")
+    parser.add_argument("--min-confidence", type=float, default=0.5, help="smolVLM 応答を採用する最小信頼度（0-1）")
     parser.add_argument("--forward-speed", type=int, default=60, help="前進時の速度（0-100）")
     parser.add_argument("--turn-speed", type=int, default=40, help="旋回時の速度（0-100）")
     parser.add_argument("--poll-sleep", type=float, default=0.05, help="各ループ後のスリープ秒数")
     parser.add_argument("--no-preview", action="store_true", help="OpenCV プレビューウィンドウを無効化")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--enable-dark-bottle-heuristic",
+        action="store_true",
+        help="SmolVLM が未検出のときに黒いボトルをヒューリスティックで推定する機能を有効化",
+    )
     parser.add_argument(
         "--car-api-style",
         choices=("query", "path"),
@@ -368,7 +487,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         metavar="direction=name",
         help="パス式 API で direction→コマンド名を上書き (例: stop=stopcar left=turnleft)",
     )
+    parser.add_argument(
+        "--low-latency",
+        action="store_true",
+        help="プレビューを無効化し、バッファを極小にして MJPEG 遅延を抑える",
+    )
     args = parser.parse_args(argv)
+    if args.low_latency:
+        args.no_preview = True
+        args.poll_sleep = min(args.poll_sleep, 0.01)
+    args.dark_bottle_heuristic = args.enable_dark_bottle_heuristic
     try:
         args.car_path_map = _parse_mapping_items(args.car_path_map)
     except ValueError as exc:
@@ -390,6 +518,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         user_prompt=args.user_prompt,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
+        bottom_focus_ratio=args.bottom_focus_ratio,
     )
     path_map = default_path_command_map()
     if args.car_path_map:
@@ -413,6 +542,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         turn_speed=args.turn_speed,
         poll_sleep=args.poll_sleep,
         preview=not args.no_preview,
+        dark_bottle_heuristic=args.dark_bottle_heuristic,
+        low_latency=args.low_latency,
     )
 
     def handle_sigint(signum, frame):  # pragma: no cover - シグナル処理

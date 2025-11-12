@@ -5,8 +5,12 @@ CAR_API_STYLE ?= path
 AUTOPILOT_LOG_LEVEL ?= INFO
 PYTHONPATH ?= $(CURDIR)/..
 EXTRA_ARGS ?=
+RASPI_AGENT_PORT ?= 8080
+AGENT_URL ?= http://192.168.0.12:$(RASPI_AGENT_PORT)
+DIRECT_INSTRUCTION ?= Please stop in front of the black bottle.
+HYBRID_INSTRUCTION ?= Move to the black bottle and stop.
 
-.PHONY: check-env autopilot autopilot-debug
+.PHONY: check-env autopilot autopilot-debug raspi-agent pc-direct pc-hybrid
 
 check-env:
 	@if [ -z "$(CAM_URL)" ]; then echo "CAM_URL が未設定です"; exit 1; fi
@@ -23,3 +27,23 @@ autopilot: check-env
 
 autopilot-debug: AUTOPILOT_LOG_LEVEL = DEBUG
 autopilot-debug: autopilot
+
+raspi-agent:
+	PYTHONPATH=$(PYTHONPATH) python -m raspycar.raspi_agent \
+		--bind 0.0.0.0 \
+		--port $(RASPI_AGENT_PORT) \
+		$(EXTRA_ARGS)
+
+pc-direct:
+	PYTHONPATH=$(PYTHONPATH) python pc_controller_direct.py \
+		--agent-url "$(AGENT_URL)" \
+		--instruction "$(DIRECT_INSTRUCTION)" \
+		--model-id "$(MODEL_DIR)" \
+		$(EXTRA_ARGS)
+
+pc-hybrid:
+	PYTHONPATH=$(PYTHONPATH) python pc_controller_hybrid.py \
+		--agent-url "$(AGENT_URL)" \
+		--instruction "$(HYBRID_INSTRUCTION)" \
+		--model-id "$(MODEL_DIR)" \
+		$(EXTRA_ARGS)
