@@ -173,8 +173,8 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def _detect_dark_bottle(frame: np.ndarray) -> Optional[BoxDetection]:
-    """黒いペットボトルを単純な画素ヒューリスティックで探す。"""
+def _detect_yellow_box(frame: np.ndarray) -> Optional[BoxDetection]:
+    """正面に TARGET と書かれた黄色い箱をヒューリスティックに探索する。"""
 
     h, w = frame.shape[:2]
     if h == 0 or w == 0:
@@ -184,8 +184,8 @@ def _detect_dark_bottle(frame: np.ndarray) -> Optional[BoxDetection]:
     roi = frame[roi_top:, :]
 
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    lower = np.array([0, 0, 0], dtype=np.uint8)
-    upper = np.array([180, 150, 200], dtype=np.uint8)
+    lower = np.array([20, 80, 150], dtype=np.uint8)
+    upper = np.array([35, 255, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
     mask = cv2.GaussianBlur(mask, (5, 5), 0)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
@@ -203,7 +203,7 @@ def _detect_dark_bottle(frame: np.ndarray) -> Optional[BoxDetection]:
         if area < frame_area * 0.001:
             continue
         aspect = bh / max(bw, 1)
-        if aspect < 1.2:
+        if aspect < 0.5 or aspect > 2.5:
             continue
         score = area * aspect
         if score > best_score:
@@ -249,7 +249,7 @@ class TargetFollower:
         turn_speed: int,
         poll_sleep: float,
         preview: bool,
-        dark_bottle_heuristic: bool,
+        yellow_box_heuristic: bool,
         low_latency: bool,
     ) -> None:
         self._client = client
@@ -264,7 +264,7 @@ class TargetFollower:
         self._turn_speed = int(np.clip(turn_speed, 0, 100))
         self._poll_sleep = max(0.0, poll_sleep)
         self._preview = preview
-        self._dark_bottle_heuristic = dark_bottle_heuristic
+        self._yellow_box_heuristic = yellow_box_heuristic
         self._low_latency = low_latency
         self._latency_flush_frames = 6 if low_latency else 0
 
@@ -322,11 +322,11 @@ class TargetFollower:
                                 self._min_confidence,
                             )
                             candidate = None
-                    if candidate is None and self._dark_bottle_heuristic:
-                        candidate = _detect_dark_bottle(frame)
+                    if candidate is None and self._yellow_box_heuristic:
+                        candidate = _detect_yellow_box(frame)
                         if candidate:
                             LOG.debug(
-                                "ダークボトルヒューリスティックで検出: conf=%.2f", candidate.confidence
+                                "黄色箱ヒューリスティックで検出: conf=%.2f", candidate.confidence
                             )
                             last_detection = candidate
                             last_detection_ts = now
@@ -436,21 +436,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--system-prompt",
         default=(
             "You are a vision detector for a mobile robot. Respond ONLY with a JSON dict containing keys "
-            "present, confidence, center_x, center_y, box_width, box_height. Detect a single upright black coffee "
-            "bottle filled with dark liquid, silver cap, yellow circular label reading UCC BLACK. Ignore chairs, "
-            "people, reflections, tables, and everything else. If the bottle is not clearly visible, respond with "
-            "present=false and zeros."
+            "present, confidence, center_x, center_y, box_width, box_height. Detect a single bright yellow rectangular "
+            "box with bold black text TARGET on its face. Ignore bottles, people, reflections, and any objects that "
+            "are not clearly the yellow TARGET box. If the box is not clearly visible, respond with present=false and zeros."
         ),
     )
     parser.add_argument(
         "--user-prompt",
         default=(
-            'Analyze the camera view from a floor-level robot. If you clearly see the UCC BLACK coffee bottle '
-            '(glossy black body filled with dark liquid, yellow circular label with the word BLACK/UCC, small silver '
-            'cap), output ONLY JSON such as {"present": true, "confidence": 0.85, "center_x": 0.52, '
-            '"center_y": 0.62, "box_width": 0.20, "box_height": 0.30}. If it is missing, partially out of frame, '
-            'blurred, or ambiguous, output present=false and zeros for all numeric values. Do not add text before or '
-            'after the JSON.'
+            'Analyze the camera view from a floor-level robot. If you clearly see the yellow box with the word TARGET '
+            'printed on its face (bright yellow sides, matte cardboard texture, bold black letters TARGET across the front), '
+            'output ONLY JSON such as {"present": true, "confidence": 0.85, "center_x": 0.52, "center_y": 0.62, '
+            '"box_width": 0.20, "box_height": 0.30}. If it is missing, partially out of frame, blurred, occluded, '
+            'or ambiguous, output present=false and zeros for all numeric values. Do not add text before or after the JSON.'
         ),
     )
     parser.add_argument(
@@ -470,9 +468,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-preview", action="store_true", help="OpenCV プレビューウィンドウを無効化")
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument(
-        "--enable-dark-bottle-heuristic",
+        "--enable-yellow-box-heuristic",
         action="store_true",
-        help="SmolVLM が未検出のときに黒いボトルをヒューリスティックで推定する機能を有効化",
+        help="SmolVLM が未検出のときに黄色い TARGET 箱をヒューリスティックで推定する機能を有効化",
     )
     parser.add_argument(
         "--car-api-style",
@@ -496,7 +494,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     if args.low_latency:
         args.no_preview = True
         args.poll_sleep = min(args.poll_sleep, 0.01)
-    args.dark_bottle_heuristic = args.enable_dark_bottle_heuristic
+    args.yellow_box_heuristic = args.enable_yellow_box_heuristic
     try:
         args.car_path_map = _parse_mapping_items(args.car_path_map)
     except ValueError as exc:
@@ -542,7 +540,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         turn_speed=args.turn_speed,
         poll_sleep=args.poll_sleep,
         preview=not args.no_preview,
-        dark_bottle_heuristic=args.dark_bottle_heuristic,
+        yellow_box_heuristic=args.yellow_box_heuristic,
         low_latency=args.low_latency,
     )
 

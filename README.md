@@ -87,8 +87,8 @@ make pc-hybrid
 | 役割 | ファイル | 主な機能 |
 | --- | --- | --- |
 | ラズパイ側エージェント | `raspi_agent.py` | カメラを `frame.jpg`/`stream.mjpg` として配信、`/command` で `FORWARD/LEFT/...` を受信してモータ制御。2 秒コマンドが来なければ自動 STOP。 |
-| PC: VLM ダイレクト制御 | `pc_controller_direct.py` | SmolVLM に「次の行動コマンドを 1 語で答えよ」と指示し、そのまま `raspi_agent` に送信。VLM の揺れをそのまま観測できる。 |
-| PC: VLM + ルール制御 | `pc_controller_hybrid.py` | SmolVLM には JSON で `position/distance/confidence` だけ答えさせ、左右調整と減速／停止は手書きルールで決める。 |
+| PC: VLM ダイレクト制御 | `pc_controller_direct.py` | SmolVLM に「次の行動コマンドを 1 語で答えよ」と指示し、そのまま `raspi_agent` に送信。ループ間隔は 0.5 秒（推奨）で、LEFT⇄RIGHT の即反転や STOP の誤判定を抑えるヒステリシスを内蔵。 |
+| PC: VLM + ルール制御 | `pc_controller_hybrid.py` | SmolVLM には JSON で `position/distance/confidence` だけ答えさせ、位置／距離それぞれにヒステリシスを掛けてからルールで決定。信頼度が閾値未満なら直前のコマンドを維持。 |
 
 ### 1. Raspberry Pi: `raspi_agent.py`
 
@@ -115,9 +115,9 @@ pip install -r requirements.txt mlx mlx-vlm opencv-python pillow numpy
 
 python pc_controller_direct.py \
   --agent-url http://192.168.0.12:8080 \
-  --instruction "Please stop in front of the black UCC bottle" \
+  --instruction "Move straight to the yellow box with the word TARGET on it and stop" \
   --model-id ./models/smolvlm2-mlx \
-  --loop-interval 1.0
+  --loop-interval 0.5
 ```
 
 - ループ毎に `frame.jpg` を取得 → SmolVLM で `LEFT/RIGHT/FORWARD/FORWARD_SLOW/STOP` のどれか 1 つを選択 → `raspi_agent` に送信。
@@ -128,7 +128,7 @@ python pc_controller_direct.py \
 ```bash
 python pc_controller_hybrid.py \
   --agent-url http://192.168.0.12:8080 \
-  --instruction "Move to the black bottle and stop" \
+  --instruction "Head for the yellow TARGET box and stop exactly in front" \
   --model-id ./models/smolvlm2-mlx \
   --min-confidence 0.4
 ```
@@ -136,6 +136,20 @@ python pc_controller_hybrid.py \
 - SmolVLM には JSON (`{"position": "LEFT", "distance": "FAR", "confidence": 0.82}`) で答えさせ、
   - 位置が LEFT/RIGHT なら旋回、CENTER なら距離（FAR/MID/NEAR）に応じて前進/減速/停止。
 - 同じタスクを `pc_controller_direct.py` と比較することで、成功率・到達時間・コマンド反転回数などを評価可能。
+
+### ループ設計とヒステリシスの目安
+
+- **ループ間隔 (`--loop-interval`)**: 推論時間（SmolVLM で 0.1〜0.4 秒）より少し長い 0.5 秒から開始し、安定したら 0.3 秒付近まで短縮する。0.2 秒未満では古い認識で動く時間が増えるため非推奨。
+- **1 コマンドあたりの移動量**: 走行速度 `v` (cm/s) とループ間隔 `T` に対して `v × T` cm が 1 ステップの移動量になる。`T=0.5` 秒で `v=10`〜`15` cm/s に抑えると 1 ステップ 5〜7.5 cm 程度になり、壁際でも間に合う。速度は実機で 1 秒間 `FORWARD` を出し実測してから PWM を調整する。
+- **コマンド揺れ対策**:
+  - `pc_controller_direct.py`: `--stop-confirmation-loops` で STOP を確定させる投票数（既定 2）、LEFT⇄RIGHT の即反転は自動抑制。
+  - `pc_controller_hybrid.py`: 位置と距離のヒステリシス (`--position-hold`, `--distance-hold`) を追加し、1 回だけの揺れではコマンドを変えない。信頼度が足りない場合は直前のコマンドを維持。
+- **比較実験時**: 条件A/Bともに同じ `--loop-interval` と速度設定を使い、「違いは VLM の責務範囲だけ」と説明できるようにする。
+
+推奨の調整フロー:
+1. Pi 上で一定時間 `FORWARD` を出して 1 秒あたりの移動量を実測し、ループ間隔 `T=0.5` 秒に合わせて 1 ステップ 3〜7 cm になるよう速度を決める。
+2. `pc_controller_direct.py --loop-interval 0.5 --stop-confirmation-loops 2` で試走し、ログからコマンド切り替えの周期と推論時間を確認。
+3. 同じパラメータで `pc_controller_hybrid.py` を走らせ、`--position-hold` / `--distance-hold` を 2→3 に増やすなどして揺れが減る幅を記録。
 
 Makefile には以下のターゲットを用意しています。
 
@@ -220,7 +234,7 @@ VLM 連携時は、推論結果に応じて上記コマンド相当の関数を�
 
 ### SmolVLM を用いた簡易自律走行（`webcar.py` 向け）
 
-`raspycar.autopilot` は MJPEG ストリームを取り込み、SmolVLM モデルで黒いコーヒーボトル（UCC BLACK）の位置を検出しながら Lesson 6 の Flask エンドポイントへ前進／左右／停止コマンドを送るサンプルループです。
+`raspycar.autopilot` は MJPEG ストリームを取り込み、SmolVLM モデルで「正面に TARGET と印字された黄色の箱」を検出しながら Lesson 6 の Flask エンドポイントへ前進／左右／停止コマンドを送るサンプルループです。
 
 ```bash
 python -m raspycar.autopilot \
@@ -238,10 +252,10 @@ python -m raspycar.autopilot \
 - `--detection-interval`（デフォルト 6）で推論を挟むフレーム間隔、`--stop-area-ratio`（デフォルト 0.08）で停止判定面積が調整できます。
 - `--bottom-focus-ratio`（デフォルト 0.6）で SmolVLM に渡す画像の下部割合を指定できます。床付近にあるターゲットへ注意を集中させたい場合に有効です。
 - `--min-confidence` で SmolVLM が返す `confidence` の最低値を指定できます（デフォルト 0.5）。閾値未満の検出は破棄されるため、誤検出を抑えたい場合に利用してください。
-- どうしても VLM が応答しない場合に備え、`--enable-dark-bottle-heuristic` を付けると簡易的な暗色ボトル推定を追加できます（デフォルトは無効）。
+- どうしても VLM が応答しない場合に備え、`--enable-yellow-box-heuristic` で単純な黄色箱検出（TARGET 文字を想定）を併用できます（デフォルトは無効）。
 - `--low-latency` を付けると OpenCV プレビューを強制的に無効化し、`VideoCapture` のバッファを 1 フレームに制限してフレーム遅延を抑えます（`poll_sleep` も最大全 0.01 秒に切り詰め）。ブラウザでストリームを確認しつつ Mac 側は制御専用にしたい場合に便利です。
 
-SmolVLM の応答 JSON は「ターゲットが見つかったか」とその位置・サイズを返す構成を想定しており、デフォルトの `--system-prompt` / `--user-prompt` は UCC BLACK ボトルの検出に特化した文面になっています（`present`, `confidence`, `center_x`, `center_y`, `box_width`, `box_height` を必ず含む辞書のみ許可）。別の目標を扱う場合は以下のようにプロンプトを上書きしてください。
+SmolVLM の応答 JSON は「ターゲットが見つかったか」とその位置・サイズを返す構成を想定しており、デフォルトの `--system-prompt` / `--user-prompt` は 黄色の TARGET 箱の検出に特化した文面になっています（`present`, `confidence`, `center_x`, `center_y`, `box_width`, `box_height` を必ず含む辞書のみ許可）。別の目標を扱う場合は以下のようにプロンプトを上書きしてください。
 
 ```bash
 python -m raspycar.autopilot \

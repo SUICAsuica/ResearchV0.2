@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from typing import List, Sequence
+from typing import List, Sequence, Tuple
 
 import cv2
 from PIL import Image
@@ -14,10 +14,46 @@ from raspycar.agent_client import RaspiAgentClient
 
 LOG = logging.getLogger(__name__)
 ALLOWED_COMMANDS = ["FORWARD", "FORWARD_SLOW", "LEFT", "RIGHT", "STOP"]
+OPPOSITE = {"LEFT": "RIGHT", "RIGHT": "LEFT"}
+
+
+class CommandGovernor:
+    """Simple hysteresis logic to avoid rapid oscillation."""
+
+    def __init__(self, *, stop_confirmation_loops: int = 2) -> None:
+        self._stop_confirmation = max(1, stop_confirmation_loops)
+        self._pending_stop = 0
+        self._last_command: str = "STOP"
+
+    def filter(self, candidate: str) -> str:
+        command = candidate
+        prev = self._last_command
+
+        # 1) Prevent immediate LEFT⇄RIGHT反転
+        if prev in OPPOSITE and command == OPPOSITE[prev]:
+            LOG.debug("ヒステリシス: %s → %s を抑制", prev, command)
+            command = prev
+
+        # 2) Require multiple STOP votes before完全停止
+        if command == "STOP":
+            self._pending_stop += 1
+            if self._pending_stop < self._stop_confirmation and prev not in (None, "STOP"):
+                LOG.debug("ヒステリシス: STOP の投票 %d/%d → %s を維持", self._pending_stop,
+                          self._stop_confirmation, prev)
+                command = prev
+        else:
+            self._pending_stop = 0
+
+        self._last_command = command
+        return command
+
+    @property
+    def last_command(self) -> str:
+        return self._last_command
 
 
 class SmolVLMActionPlanner:
-    """Wrap mlx-vlm so it outputs one of the allowed commands."""
+    """Wrap mlx-vlm so it outputs one of the allowed commands (JSON preferred)."""
 
     def __init__(
         self,
@@ -41,7 +77,7 @@ class SmolVLMActionPlanner:
         self.system_prompt = system_prompt
         self.user_prompt_template = user_prompt_template
 
-    def decide(self, frame_bgr, instruction: str) -> str:
+    def decide(self, frame_bgr, instruction: str) -> Tuple[str, float]:
         messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
@@ -73,9 +109,16 @@ class SmolVLMActionPlanner:
             max_tokens=self.max_new_tokens,
             verbose=False,
         )
-        text = getattr(result, "text", "").upper().strip()
+        text = getattr(result, "text", "")
         LOG.debug("smolVLM 生応答: %s", text)
-        return _extract_command(text, ALLOWED_COMMANDS)
+        payload = _parse_command_json(text)
+        if payload:
+            command = str(payload.get("command", "STOP")).upper()
+            confidence = float(payload.get("confidence", 0.0))
+        else:
+            command = _extract_command(text.upper().strip(), ALLOWED_COMMANDS)
+            confidence = 0.0
+        return command, confidence
 
 
 def _extract_command(text: str, candidates: Sequence[str]) -> str:
@@ -87,6 +130,21 @@ def _extract_command(text: str, candidates: Sequence[str]) -> str:
     return "STOP"
 
 
+def _parse_command_json(text: str) -> dict:
+    import json
+    import re
+
+    snippets = re.findall(r"\{.*?\}", text, re.DOTALL)
+    for snippet in snippets:
+        try:
+            data = json.loads(snippet)
+        except json.JSONDecodeError:
+            continue
+        if "command" in data:
+            return data
+    return {}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SmolVLM direct controller")
     parser.add_argument("--agent-url", required=True, help="raspi_agent のベースURL")
@@ -94,8 +152,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", default="mlx-community/SmolVLM2-500M-Video-Instruct-mlx")
     parser.add_argument("--max-new-tokens", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--loop-interval", type=float, default=1.0, help="ループ周期（秒）")
+    parser.add_argument("--loop-interval", type=float, default=0.5, help="ループ周期（秒）。0.3〜0.5秒を推奨")
+    parser.add_argument(
+        "--stop-confirmation-loops",
+        type=int,
+        default=2,
+        help="STOP を実行するために必要な連続投票数（ヒステリシス用）",
+    )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.0,
+        help="この値を下回る信頼度の結果は無視して直前コマンドを維持",
+    )
     return parser.parse_args()
 
 
@@ -106,18 +176,25 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    if args.loop_interval < 0.2:
+        LOG.warning("loop-interval=%.2f 秒は短すぎます。0.3〜0.5 秒を推奨", args.loop_interval)
+
     client = RaspiAgentClient(args.agent_url)
     planner = SmolVLMActionPlanner(
         args.model_id,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         system_prompt=(
-            "You control a differential-drive robot car with commands LEFT, RIGHT, FORWARD, "
-            "FORWARD_SLOW, STOP. Respond with exactly one of those tokens."),
+            "You control a differential-drive robot car. Respond ONLY with JSON shaped like "
+            '{{"command":"FORWARD","confidence":0.9}}. '
+            "command must be one of LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP."),
         user_prompt_template=(
-            "Instruction: {instruction}. Analyse the provided camera image and reply with "
-            "ONLY one command token from this list: {options}. No punctuation."),
+            "Instruction: {instruction}. Analyse the camera image, then reply ONLY with JSON "
+            'of the form {{"command":"TOKEN","confidence":0.xx}} where TOKEN is one of: {options}. '
+            "No prose, no explanation."),
     )
+
+    governor = CommandGovernor(stop_confirmation_loops=args.stop_confirmation_loops)
 
     try:
         while True:
@@ -125,9 +202,21 @@ def main() -> int:
             if frame is None:
                 time.sleep(args.loop_interval)
                 continue
-            command = planner.decide(frame, args.instruction)
-            LOG.info("決定コマンド: %s", command)
-            client.send_command(command)
+            command, confidence = planner.decide(frame, args.instruction)
+            if confidence < args.min_confidence:
+                filtered = governor.last_command
+                LOG.info(
+                    "信頼度 %.2f < %.2f: 直前のコマンド %s を維持",
+                    confidence,
+                    args.min_confidence,
+                    filtered,
+                )
+            else:
+                filtered = governor.filter(command)
+                if filtered != command:
+                    LOG.debug("フィルタ後コマンド: %s → %s", command, filtered)
+                LOG.info("送信コマンド: %s (conf=%.2f)", filtered, confidence)
+            client.send_command(filtered)
             time.sleep(args.loop_interval)
     except KeyboardInterrupt:
         LOG.info("停止シグナルを受信。STOP を送信します。")

@@ -7,8 +7,8 @@ PYTHONPATH ?= $(CURDIR)/..
 EXTRA_ARGS ?=
 RASPI_AGENT_PORT ?= 8080
 AGENT_URL ?= http://192.168.0.12:$(RASPI_AGENT_PORT)
-DIRECT_INSTRUCTION ?= Please stop in front of the black bottle.
-HYBRID_INSTRUCTION ?= Move to the black bottle and stop.
+DIRECT_INSTRUCTION ?= Approach the yellow box labeled TARGET and stop in front of it.
+HYBRID_INSTRUCTION ?= Move toward the yellow TARGET box and stop exactly at the front.
 
 .PHONY: check-env autopilot autopilot-debug raspi-agent pc-direct pc-hybrid
 
