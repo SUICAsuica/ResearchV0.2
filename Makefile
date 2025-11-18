@@ -6,7 +6,7 @@ AUTOPILOT_LOG_LEVEL ?= INFO
 PYTHONPATH ?= $(CURDIR)/..
 EXTRA_ARGS ?=
 RASPI_AGENT_PORT ?= 8080
-AGENT_URL ?= http://192.168.0.12:$(RASPI_AGENT_PORT)
+AGENT_URL ?= http://192.168.0.13:$(RASPI_AGENT_PORT)
 DIRECT_INSTRUCTION ?= Approach the yellow box labeled TARGET and stop in front of it.
 HYBRID_INSTRUCTION ?= Move toward the yellow TARGET box and stop exactly at the front.
 

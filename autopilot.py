@@ -427,8 +427,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="smolVLM を用いた Raspberry Pi Car 自律制御",
     )
-    parser.add_argument("--camera-url", required=True, help="MJPEG ストリーム URL 例: http://192.168.0.12:8899/stream.mjpg")
-    parser.add_argument("--base-url", required=True, help="Flask 制御エンドポイント 例: http://192.168.0.12:5000")
+    parser.add_argument("--camera-url", required=True, help="MJPEG ストリーム URL 例: http://192.168.0.13:8899/stream.mjpg")
+    parser.add_argument("--base-url", required=True, help="Flask 制御エンドポイント 例: http://192.168.0.13:5000")
     parser.add_argument("--smol-model-id", default=None, help="mlx-vlm に渡すモデル ID またはパス（省略時は環境変数 SMOL_MODEL_ID を参照）")
     parser.add_argument("--max-new-tokens", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.0)

@@ -77,7 +77,7 @@ class SmolVLMActionPlanner:
         self.system_prompt = system_prompt
         self.user_prompt_template = user_prompt_template
 
-    def decide(self, frame_bgr, instruction: str) -> Tuple[str, float]:
+    def decide(self, frame_bgr, instruction: str) -> Tuple[str, float, str]:
         messages = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
@@ -118,7 +118,7 @@ class SmolVLMActionPlanner:
         else:
             command = _extract_command(text.upper().strip(), ALLOWED_COMMANDS)
             confidence = 0.0
-        return command, confidence
+        return command, confidence, text
 
 
 def _extract_command(text: str, candidates: Sequence[str]) -> str:
@@ -185,13 +185,13 @@ def main() -> int:
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         system_prompt=(
-            "You control a differential-drive robot car. Respond ONLY with JSON shaped like "
-            '{{"command":"FORWARD","confidence":0.9}}. '
-            "command must be one of LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP."),
+            "You control a differential-drive robot car. Respond ONLY with JSON like "
+            '{{"command":"FORWARD","confidence":0.90}}. '
+            "The command must be exactly one of: LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP."),
         user_prompt_template=(
             "Instruction: {instruction}. Analyse the camera image, then reply ONLY with JSON "
-            'of the form {{"command":"TOKEN","confidence":0.xx}} where TOKEN is one of: {options}. '
-            "No prose, no explanation."),
+            'of the form {{"command":"<ONE_OF_OPTIONS>","confidence":0.xx}}. '
+            "Options: {options}. No prose, no extra text."),
     )
 
     governor = CommandGovernor(stop_confirmation_loops=args.stop_confirmation_loops)
@@ -202,7 +202,15 @@ def main() -> int:
             if frame is None:
                 time.sleep(args.loop_interval)
                 continue
-            command, confidence = planner.decide(frame, args.instruction)
+            command, confidence, raw_text = planner.decide(frame, args.instruction)
+            if command not in ALLOWED_COMMANDS:
+                recovered = _extract_command(raw_text.upper().strip(), ALLOWED_COMMANDS)
+                if recovered:
+                    LOG.warning("未知コマンド '%s' を再解釈して '%s' を採用します", command, recovered)
+                    command = recovered
+                else:
+                    LOG.error("未知コマンド '%s' を無視します（生応答: %s）", command, raw_text)
+                    command = governor.last_command
             if confidence < args.min_confidence:
                 filtered = governor.last_command
                 LOG.info(

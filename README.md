@@ -6,6 +6,46 @@
 
 ---
 
+## いちばん確実な起動手順（2025-11-18 更新）
+
+GPIO 権限エラーを避けつつ、カメラは教材の MJPEG を流用する手順です。Pi で一度動けば、PC 側は `make pc-direct` / `make pc-hybrid` を叩くだけで実験できます。
+
+1. **Pi でカメラ配信（8899 番）**
+   ```bash
+   cd ~/osoyoo-robot
+   python3 startcam.py
+   # http://127.0.0.1:8899/stream.mjpg が映ればOK
+   ```
+
+2. **Pi で raspi_agent を root + venv で起動（8080 番）**  
+   RPi.GPIO が `/dev/mem` にアクセスできず `Cannot determine SOC peripheral base address` になる場合があるため、root で実行する。  
+   ```bash
+   sudo -E PYTHONPATH=/home/shori/laboratory:/home/shori/laboratory/Researchv2.0 \
+     /home/shori/laboratory/Researchv2.0/raspycar/.venv/bin/python \
+     -m raspycar.raspi_agent \
+       --bind 0.0.0.0 --port 8080 \
+       --camera-source http://127.0.0.1:8899/stream.mjpg \
+       --camera-width 640 --camera-height 480 --camera-fps 5
+   ```
+   - 起動ログに `MotorController initialised ...` が出て、`dry_run` が false ならモータ制御有効。
+   - Pi 5 / 新カーネルで RPi.GPIO が認識しない場合は `sudo apt-get install python3-rpi-lgpio` と `pip install rpi-lgpio` を入れてから同コマンドを実行。
+
+3. **PC/Mac から制御**
+   ```bash
+   cd ~/laboratory/Researchv2.0/raspycar
+   source .venv/bin/activate
+   source env.home.26.sh            # 例: 自宅で 192.168.0.26 のとき
+   make pc-direct                   # 条件A: VLM ダイレクト制御
+   # or
+   make pc-hybrid                   # 条件B: 認識＋ルール制御
+   ```
+   `EXTRA_ARGS="--log-level DEBUG --loop-interval 1.0"` のように挙動を調整可能。
+
+この流れが安定する理由:
+- カメラは教材の `startcam.py` が確実に掴んでおり、raspi_agent は HTTP で中継するだけ。
+- raspi_agent を root 実行することで GPIO ベースアドレス取得エラーを回避し、`dry_run` にならない。
+- PC 側は 8080 の `AGENT_URL` を見るだけで、条件A/Bの比較実験がそのまま走る。
+
 ## アーキテクチャ整理
 
 - **映像＋操作（研究フロー）**: ラズパイ上で `raspi_agent.py` を常駐させ、`http://<PiのIP>:8080/frame.jpg` / `/stream.mjpg` を配信しつつ、`/command` で `FORWARD/LEFT/...` を受け付ける。
@@ -65,12 +105,16 @@ python3 raspi_agent.py \
 
 ## 拠点別 IP と環境切り替え
 
-- 2025-11-12 時点の静的 IP は **自宅 = `192.168.0.12` / 研究室 = `192.168.11.11`** です。
-- それぞれの環境で `AGENT_URL` / `CAM_URL` / `BASE_URL` を取り違えないよう、`env.home.sh` と `env.lab.sh` を用意しました。作業前に `source` してください。
+- 2025-11-12 時点の静的 IP は **自宅 = `192.168.0.13` / 研究室 = `192.168.11.11`** です。
+- それぞれの環境で `AGENT_URL` / `CAM_URL` / `BASE_URL` を取り違えないよう、`env.home.sh` と `env.lab.sh` を用意しました。作業前に `source` してください。自宅側の Pi が DHCP で一時的に `192.168.0.26` になる場合は `env.home.26.sh` を使います。
 
 ```bash
-# 自宅（192.168.0.12）で direct 制御を試す例
+# 自宅（192.168.0.13）で direct 制御を試す例
 source env.home.sh
+make pc-direct
+
+# 自宅が 192.168.0.26 に変わった場合の例
+source env.home.26.sh
 make pc-direct
 
 # 研究室（192.168.11.11）で hybrid 制御を試す例
@@ -114,7 +158,7 @@ source .venv/bin/activate
 pip install -r requirements.txt mlx mlx-vlm opencv-python pillow numpy
 
 python pc_controller_direct.py \
-  --agent-url http://192.168.0.12:8080 \
+  --agent-url http://192.168.0.13:8080 \
   --instruction "Move straight to the yellow box with the word TARGET on it and stop" \
   --model-id ./models/smolvlm2-mlx \
   --loop-interval 0.5
@@ -127,7 +171,7 @@ python pc_controller_direct.py \
 
 ```bash
 python pc_controller_hybrid.py \
-  --agent-url http://192.168.0.12:8080 \
+  --agent-url http://192.168.0.13:8080 \
   --instruction "Head for the yellow TARGET box and stop exactly in front" \
   --model-id ./models/smolvlm2-mlx \
   --min-confidence 0.4
@@ -215,16 +259,16 @@ python3 webcar.py            # 毎回：Flask サーバ
 
 ```bash
 # 前進（必要に応じて speed パラメータを付与）
-python -m raspycar.server --base-url http://192.168.0.12:5000 move forward --speed 40
+python -m raspycar.server --base-url http://192.168.0.13:5000 move forward --speed 40
 
 # 左旋回
-python -m raspycar.server --base-url http://192.168.0.12:5000 move left
+python -m raspycar.server --base-url http://192.168.0.13:5000 move left
 
 # 停止
-python -m raspycar.server --base-url http://192.168.0.12:5000 stop
+python -m raspycar.server --base-url http://192.168.0.13:5000 stop
 
 # カメラパン（角度を絶対指定）
-python -m raspycar.server --base-url http://192.168.0.12:5000 servo 10
+python -m raspycar.server --base-url http://192.168.0.13:5000 servo 10
 ```
 
 VLM 連携時は、推論結果に応じて上記コマンド相当の関数を呼び出す想定です。  
@@ -238,8 +282,8 @@ VLM 連携時は、推論結果に応じて上記コマンド相当の関数を�
 
 ```bash
 python -m raspycar.autopilot \
-  --camera-url http://192.168.0.12:8899/stream.mjpg \
-  --base-url http://192.168.0.12:5000 \
+  --camera-url http://192.168.0.13:8899/stream.mjpg \
+  --base-url http://192.168.0.13:5000 \
   --smol-model-id /Users/shori/laboratory/Researchv2.0/raspycar/models/smolvlm2-mlx
 ```
 
@@ -248,7 +292,7 @@ python -m raspycar.autopilot \
 - `--smol-model-id` にはローカルの SmolVLM 重みディレクトリ、または Hugging Face 上のモデル ID（例: `mlx-community/SmolVLM2-500M-Video-Instruct-mlx`）を指定します。環境変数 `SMOL_MODEL_ID` が設定されていれば省略可能です。
 - デフォルトでは OpenCV プレビューウィンドウを開きます。不要な場合は `--no-preview` を付与してください。
 - ターゲット面積や左右旋回の判定しきい値は `--stop-area-ratio`、`--turn-deadzone` などのオプションで調整できます。
-- Pi 側 Flask が `/move/<command>` 形式（例: `/move/forward`, `/move/stopcar`）を提供している場合は、`--car-api-style path --base-url http://192.168.0.12:80` を指定してください。必要に応じて `--car-path-map stop=stopcar left=turnleft` のように direction→エンドポイント名を上書きできます（既定マッピングは Osoyoo Lesson 6 に合わせています）。パス式 API では速度パラメータが受け付けられないため、`forward_speed` / `turn_speed` は無視されます。
+- Pi 側 Flask が `/move/<command>` 形式（例: `/move/forward`, `/move/stopcar`）を提供している場合は、`--car-api-style path --base-url http://192.168.0.13:80` を指定してください。必要に応じて `--car-path-map stop=stopcar left=turnleft` のように direction→エンドポイント名を上書きできます（既定マッピングは Osoyoo Lesson 6 に合わせています）。パス式 API では速度パラメータが受け付けられないため、`forward_speed` / `turn_speed` は無視されます。
 - `--detection-interval`（デフォルト 6）で推論を挟むフレーム間隔、`--stop-area-ratio`（デフォルト 0.08）で停止判定面積が調整できます。
 - `--bottom-focus-ratio`（デフォルト 0.6）で SmolVLM に渡す画像の下部割合を指定できます。床付近にあるターゲットへ注意を集中させたい場合に有効です。
 - `--min-confidence` で SmolVLM が返す `confidence` の最低値を指定できます（デフォルト 0.5）。閾値未満の検出は破棄されるため、誤検出を抑えたい場合に利用してください。
@@ -259,8 +303,8 @@ SmolVLM の応答 JSON は「ターゲットが見つかったか」とその位
 
 ```bash
 python -m raspycar.autopilot \
-  --camera-url http://192.168.0.12:8899/stream.mjpg \
-  --base-url http://192.168.0.12:5000 \
+  --camera-url http://192.168.0.13:8899/stream.mjpg \
+  --base-url http://192.168.0.13:5000 \
   --smol-model-id ./models/smolvlm2-mlx \
   --system-prompt "You are a vision model that must always respond with a JSON dict containing keys: present, confidence, center_x, center_y, box_width, box_height." \
   --user-prompt "Given the image, output only JSON like {\"present\": true, \"confidence\": 0.8, \"center_x\": 0.5, \"center_y\": 0.5, \"box_width\": 0.2, \"box_height\": 0.2}."
@@ -273,7 +317,7 @@ python -m raspycar.autopilot \
 ```python
 from raspycar.server import CarClient
 
-client = CarClient(base_url="http://192.168.0.12:5000")
+client = CarClient(base_url="http://192.168.0.13:5000")
 client.move("forward", speed=40)
 client.move("left")
 client.stop()

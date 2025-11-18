@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Optional, Tuple
 
 import cv2
+import requests
 
 from raspycar.hardware import MotorController
 
@@ -68,6 +69,42 @@ class CameraWorker:
 
     # ------------------------------------------------------------------ #
     def _run(self) -> None:
+        # HTTP MJPEG ソース（例: http://<ip>:8899/stream.mjpg）を直接読む場合の簡易パーサ
+        if isinstance(self._source, str) and self._source.startswith(("http://", "https://")):
+            try:
+                resp = requests.get(self._source, stream=True, timeout=5)
+            except Exception as exc:  # pragma: no cover - ネットワーク系例外
+                LOG.error("HTTP カメラへの接続に失敗しました: %s", exc)
+                return
+            if resp.status_code != 200:
+                LOG.error("HTTP カメラが %s を返しました", resp.status_code)
+                return
+            LOG.info("HTTP カメラストリームを %s から受信開始", self._source)
+            buffer = b""
+            try:
+                for chunk in resp.iter_content(chunk_size=4096):
+                    if self._stop_evt.is_set():
+                        break
+                    if not chunk:
+                        continue
+                    buffer += chunk
+                    while True:
+                        start = buffer.find(b"\xff\xd8")  # JPEG SOI
+                        end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1  # EOI
+                        if start != -1 and end != -1:
+                            jpeg = buffer[start : end + 2]
+                            buffer = buffer[end + 2 :]
+                            with self._lock:
+                                self._latest_jpeg = jpeg
+                            break
+                        else:
+                            # keep accumulating
+                            break
+            finally:
+                resp.close()
+            return
+
+        # それ以外は従来どおり OpenCV でデバイスを開く
         cap = cv2.VideoCapture(self._source)
         if self._width:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self._width))
@@ -257,7 +294,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Raspberry Pi robot agent")
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--camera-source", default=0, help="OpenCV VideoCapture source index/path")
+    parser.add_argument(
+        "--camera-source",
+        default=0,
+        help="OpenCV VideoCapture source index/path or HTTP MJPEG URL",
+    )
     parser.add_argument("--camera-width", type=int, default=640)
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--camera-fps", type=float, default=2.0)

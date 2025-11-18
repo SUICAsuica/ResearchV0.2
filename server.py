@@ -36,7 +36,7 @@ def default_path_command_map() -> Dict[str, str]:
 
 def _normalise_base_url(base_url: str) -> str:
     if not base_url.startswith(("http://", "https://")):
-        raise ValueError("base_url must include scheme (e.g. http://192.168.0.12:5000)")
+        raise ValueError("base_url must include scheme (e.g. http://192.168.0.13:5000)")
     return base_url.rstrip("/")
 
 
@@ -136,7 +136,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="OSOYOO Raspberry Pi Robot Car (2023) の Flask 制御エンドポイントを呼び出します。",
     )
-    parser.add_argument("--base-url", required=True, help="例: http://192.168.0.12:5000")
+    parser.add_argument("--base-url", required=True, help="例: http://192.168.0.13:5000")
     parser.add_argument("--endpoint", default="/", help="相対パス（既定: /）")
     parser.add_argument("--action-param", default="action", help="アクション名のクエリキー（既定: action）")
     parser.add_argument("--action-value", default="command", help="アクション値（既定: command）")
