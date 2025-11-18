@@ -28,9 +28,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", default="mlx-community/SmolVLM2-500M-Video-Instruct-mlx")
     parser.add_argument(
         "--mode",
-        choices=["hybrid", "direct"],
+        choices=["hybrid", "direct", "describe"],
         default="hybrid",
-        help="hybrid=位置/距離JSON, direct=コマンドJSON",
+        help="hybrid=位置/距離JSON, direct=コマンドJSON, describe=写っている物体を列挙",
     )
     parser.add_argument("--loop-interval", type=float, default=1.0, help="ループ周期（秒）")
     parser.add_argument("--temperature", type=float, default=0.0)
@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         "--save-frame-dir",
         type=Path,
         help="指定すると各推論前のフレームをこのディレクトリに frame_XXXX.jpg として保存",
+    )
+    parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=0,
+        help="推論を始める前に指定枚数のフレームを捨ててウォームアップする",
     )
     parser.add_argument(
         "--display",
@@ -128,24 +134,32 @@ class SmolVLMRunner:
         if mode == "direct":
             self.system_prompt = (
                 "You control a differential-drive robot car. Respond ONLY with JSON shaped like "
-                '{{"command":"FORWARD","confidence":0.9}}. '
-                "command must be one of LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP."
+                '{{"command":"FORWARD","confidence":0.90}}. '
+                "The command must be exactly one of: LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP. "
+                "Do NOT output any other words or explanations."
             )
             self.user_prompt_template = (
                 "Instruction: {instruction}. Analyse the camera image, then reply ONLY with JSON "
-                'of the form {{"command":"TOKEN","confidence":0.xx}} where TOKEN is one of: '
-                "LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP. No prose."
+                'of the form {{"command":"<OPTION>","confidence":0.xx}}. Options: '
+                "LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP. No prose, no jokers, no TOKEN literal."
             )
-        else:
+        elif mode == "hybrid":
             self.system_prompt = (
-                "You are estimating a TARGET box position (LEFT/CENTER/RIGHT) and distance "
-                "(FAR/MID/NEAR). Respond ONLY with JSON like "
-                '{{"position":"CENTER","distance":"FAR","confidence":0.9}}.'
+                "You are estimating a yellow TARGET box position (LEFT/CENTER/RIGHT) and distance (FAR/MID/NEAR). "
+                "If the TARGET is NOT visible, reply {\"position\":\"UNVISIBLE\",\"distance\":\"NONE\",\"confidence\":0.0}. "
+                "Otherwise respond ONLY with JSON like {\"position\":\"CENTER\",\"distance\":\"FAR\",\"confidence\":0.90}. No other text."
             )
             self.user_prompt_template = (
-                "Instruction: {instruction}. Describe the yellow TARGET box location as JSON "
-                'with fields position, distance, confidence. position must be LEFT/CENTER/RIGHT; '
-                "distance must be FAR/MID/NEAR."
+                "Instruction: {instruction}. Return ONLY JSON with fields position, distance, confidence. "
+                "position must be LEFT/CENTER/RIGHT or UNVISIBLE; distance must be FAR/MID/NEAR or NONE."
+            )
+        else:  # describe
+            self.system_prompt = (
+                "You are an assistant that lists what is visible in the camera frame. Respond ONLY with JSON "
+                '{{"objects": ["object1", "object2", ...]}}. Use short nouns. No extra text.'
+            )
+            self.user_prompt_template = (
+                "Describe briefly what you see in the frame as a JSON list named objects."
             )
 
     def run(self, frame_bgr, instruction: str) -> Dict[str, object]:
@@ -190,6 +204,7 @@ def _parse_json(text: str) -> Optional[Dict[str, object]]:
             return json.loads(snippet)
         except json.JSONDecodeError:
             continue
+
     return None
 
 
@@ -294,6 +309,16 @@ def main() -> int:
         save_dir.mkdir(parents=True, exist_ok=True)
 
     iteration = 0
+    if args.warmup_frames > 0:
+        LOG.info("ウォームアップとして先頭 %d フレームを破棄します", args.warmup_frames)
+        for i in range(args.warmup_frames):
+            frame = client.fetch_frame()
+            if frame is None:
+                LOG.warning("ウォームアップでフレーム取得に失敗 (%d/%d)", i + 1, args.warmup_frames)
+                time.sleep(args.loop_interval)
+            else:
+                LOG.debug("warmup frame %d 取得", i + 1)
+                time.sleep(args.loop_interval)
     try:
         while True:
             loop_start = time.perf_counter()
@@ -330,33 +355,42 @@ def main() -> int:
                 LOG.debug("フレームを保存しました: %s", save_path)
 
             result = runner.run(frame, args.instruction)
-            if args.color_guard and guard_result:
-                override = False
-                if not result["json"]:
-                    override = True
+            if args.color_guard:
+                if guard_result:
+                    override = False
+                    if not result["json"]:
+                        override = True
+                    else:
+                        pos = str(result["json"].get("position", "")).upper()
+                        dist = str(result["json"].get("distance", "")).upper()
+                        valid_pos = pos in {"LEFT", "CENTER", "RIGHT"}
+                        valid_dist = dist in {"FAR", "MID", "NEAR"}
+                        if not (valid_pos and valid_dist):
+                            override = True
+                        elif (pos, dist) != (guard_result.position, guard_result.distance):
+                            override = True
+                            LOG.warning(
+                                "VLM estimate %s/%s とヒューリスティック %s/%s が矛盾",
+                                pos,
+                                dist,
+                                guard_result.position,
+                                guard_result.distance,
+                            )
+                    if override:
+                        result["json"] = {
+                            "position": guard_result.position,
+                            "distance": guard_result.distance,
+                            "confidence": guard_result.confidence,
+                        }
+                        LOG.info("color-guard により結果を補正しました (conf=%.2f)", guard_result.confidence)
                 else:
-                    pos = str(result["json"].get("position", "")).upper()
-                    dist = str(result["json"].get("distance", "")).upper()
-                    valid_pos = pos in {"LEFT", "CENTER", "RIGHT"}
-                    valid_dist = dist in {"FAR", "MID", "NEAR"}
-                    if not (valid_pos and valid_dist):
-                        override = True
-                    elif (pos, dist) != (guard_result.position, guard_result.distance):
-                        override = True
-                        LOG.warning(
-                            "VLM estimate %s/%s とヒューリスティック %s/%s が矛盾",
-                            pos,
-                            dist,
-                            guard_result.position,
-                            guard_result.distance,
-                        )
-                if override:
+                    # 色で見つからない場合は確実に UNVISIBLE/NONE を返す
                     result["json"] = {
-                        "position": guard_result.position,
-                        "distance": guard_result.distance,
-                        "confidence": guard_result.confidence,
+                        "position": "UNVISIBLE",
+                        "distance": "NONE",
+                        "confidence": 0.0,
                     }
-                    LOG.info("color-guard により結果を補正しました (conf=%.2f)", guard_result.confidence)
+                    LOG.info("color-guard 未検出のため UNVISIBLE/NONE にフォールバックしました")
 
             iteration += 1
             LOG.info("---- 推論 #%d ----", iteration)

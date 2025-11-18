@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import cv2
@@ -41,6 +42,7 @@ class RaspiAgentClient:
     def fetch_frame(self) -> Optional[np.ndarray]:
         response = self.session.get(
             f"{self.base_url}/frame.jpg",
+            params={"ts": time.time()},  # キャッシュ防止のためクエリを付与
             timeout=self.timeout,
         )
         response.raise_for_status()

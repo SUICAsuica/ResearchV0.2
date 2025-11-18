@@ -71,37 +71,56 @@ class CameraWorker:
     def _run(self) -> None:
         # HTTP MJPEG ソース（例: http://<ip>:8899/stream.mjpg）を直接読む場合の簡易パーサ
         if isinstance(self._source, str) and self._source.startswith(("http://", "https://")):
-            try:
-                resp = requests.get(self._source, stream=True, timeout=5)
-            except Exception as exc:  # pragma: no cover - ネットワーク系例外
-                LOG.error("HTTP カメラへの接続に失敗しました: %s", exc)
-                return
-            if resp.status_code != 200:
-                LOG.error("HTTP カメラが %s を返しました", resp.status_code)
-                return
-            LOG.info("HTTP カメラストリームを %s から受信開始", self._source)
-            buffer = b""
-            try:
-                for chunk in resp.iter_content(chunk_size=4096):
-                    if self._stop_evt.is_set():
-                        break
-                    if not chunk:
-                        continue
-                    buffer += chunk
-                    while True:
-                        start = buffer.find(b"\xff\xd8")  # JPEG SOI
-                        end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1  # EOI
-                        if start != -1 and end != -1:
-                            jpeg = buffer[start : end + 2]
-                            buffer = buffer[end + 2 :]
-                            with self._lock:
-                                self._latest_jpeg = jpeg
+            while not self._stop_evt.is_set():
+                last_ts = time.monotonic()
+                try:
+                    resp = requests.get(self._source, stream=True, timeout=5)
+                except Exception as exc:  # pragma: no cover - ネットワーク系例外
+                    LOG.error("HTTP カメラへの接続に失敗しました: %s", exc)
+                    time.sleep(1.0)
+                    continue
+                if resp.status_code != 200:
+                    LOG.error("HTTP カメラが %s を返しました", resp.status_code)
+                    resp.close()
+                    time.sleep(1.0)
+                    continue
+                LOG.info("HTTP カメラストリームを %s から受信開始", self._source)
+                buffer = b""
+                try:
+                    for chunk in resp.iter_content(chunk_size=4096):
+                        if self._stop_evt.is_set():
                             break
-                        else:
-                            # keep accumulating
-                            break
-            finally:
-                resp.close()
+                        if not chunk:
+                            # しばらくフレーム更新が無い場合は再接続
+                            if time.monotonic() - last_ts > 3.0:
+                                LOG.warning("HTTP カメラのフレーム更新が途切れたため再接続します")
+                                break
+                            continue
+
+                        buffer += chunk
+                        # バッファが膨らみすぎたら古いデータを捨てて最新付近だけ残す。
+                        # MJPEG 受信が遅延して TCP バッファに溜まった場合でも、ここで強制的に追いつきやすくする。
+                        if len(buffer) > 2_000_000:  # 約2MBを閾値にする
+                            buffer = buffer[-200_000:]  # 末尾20万バイトだけ残す（複数フレーム分相当）
+                            LOG.warning("HTTP カメラのバッファが膨らんだため古いフレームを破棄しました")
+
+                        while True:
+                            start = buffer.find(b"\xff\xd8")  # JPEG SOI
+                            end = buffer.find(b"\xff\xd9", start + 2) if start != -1 else -1  # EOI
+                            if start != -1 and end != -1:
+                                jpeg = buffer[start : end + 2]
+                                buffer = buffer[end + 2 :]
+                                with self._lock:
+                                    self._latest_jpeg = jpeg
+                                last_ts = time.monotonic()
+                                break
+                            else:
+                                # keep accumulating
+                                break
+                    # ループが break で抜けた場合は resp を閉じて再接続
+                finally:
+                    resp.close()
+                time.sleep(0.2)  # 短い間隔で再接続
             return
 
         # それ以外は従来どおり OpenCV でデバイスを開く
