@@ -158,7 +158,12 @@ class GptLocator:
         self.model_id = model_id
         self.system_prompt = system_prompt
         self.user_prompt_template = user_prompt_template
-        self.temperature = temperature
+        if model_id.startswith("gpt-5") and temperature is not None:
+            if abs(temperature - 1.0) > 1e-6:
+                LOG.warning("モデル %s は temperature を変更できません (指定 %.2f)。デフォルト値を使用します。", model_id, temperature)
+            self.temperature = None
+        else:
+            self.temperature = temperature
         self.max_new_tokens = max_new_tokens
 
     def analyse(self, frame_bgr, instruction: str) -> SpatialEstimate:
@@ -168,15 +173,18 @@ class GptLocator:
             {"type": "image_url", "image_url": {"url": image_url}},
         ]
 
-        resp = self.client.chat.completions.create(
+        request_kwargs = dict(
             model=self.model_id,
             messages=[
                 {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=self.max_new_tokens,
-            temperature=self.temperature,
+            max_completion_tokens=self.max_new_tokens,
         )
+        if self.temperature is not None:
+            request_kwargs["temperature"] = self.temperature
+
+        resp = self.client.chat.completions.create(**request_kwargs)
 
         content = resp.choices[0].message.content
         if isinstance(content, list):
@@ -218,9 +226,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent-url", required=True)
     parser.add_argument("--instruction", required=True)
     parser.add_argument("--model-id", default="gpt-5-mini-2025-08-07")
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="gpt-5 系モデルは温度固定のため指定しても無視されます",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=80)
-    parser.add_argument("--loop-interval", type=float, default=0.5, help="ループ周期（秒）。0.3〜0.5秒推奨")
+    parser.add_argument(
+        "--loop-interval",
+        type=float,
+        default=10.0,
+        help="ループ周期（秒）。gpt-5-mini の応答遅延に合わせ 10 秒以上を推奨",
+    )
     parser.add_argument(
         "--stop-confirmation-loops",
         type=int,
@@ -240,18 +258,18 @@ def main() -> int:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    if args.loop_interval < 0.2:
-        LOG.warning("loop-interval=%.2f 秒は短すぎます。0.3〜0.5 秒を推奨", args.loop_interval)
+    if args.loop_interval < 5.0:
+        LOG.warning("loop-interval=%.2f 秒は短すぎます。推論完了まで 10 秒程度かかる前提で設定してください", args.loop_interval)
     client = RaspiAgentClient(args.agent_url)
     locator = GptLocator(
         args.model_id,
         system_prompt=(
-            "You are a perception module for a robot car. Respond ONLY with JSON containing "
-            "position (LEFT/CENTER/RIGHT/UNVISIBLE), distance (FAR/MID/NEAR/NONE) and confidence 0..1."
+            'Only reply with JSON {"position":"LEFT|CENTER|RIGHT|UNVISIBLE","distance":"FAR|MID|NEAR|NONE",'
+            '"confidence":0-1} describing the yellow TARGET box. Use UNVISIBLE/NONE/0.0 if missing.'
         ),
         user_prompt_template=(
-            "Instruction: {instruction}. Describe where the yellow TARGET box appears in the image. "
-            "Return JSON like {\"position\": \"LEFT\", \"distance\": \"FAR\", \"confidence\": 0.82}."
+            "Instruction: {instruction}. Look at the camera image and reply only with the JSON described in the "
+            "system prompt for the yellow TARGET box."
         ),
         temperature=args.temperature,
         max_new_tokens=args.max_new_tokens,

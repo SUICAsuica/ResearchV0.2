@@ -12,12 +12,14 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import cv2
 import numpy as np
 from PIL import Image
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from raspycar.agent_client import RaspiAgentClient
@@ -38,8 +40,18 @@ def parse_args() -> argparse.Namespace:
         default="hybrid",
         help="hybrid=位置/距離JSON, direct=コマンドJSON, describe=写っている物体を列挙",
     )
-    parser.add_argument("--loop-interval", type=float, default=1.0, help="ループ周期（秒）")
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--loop-interval",
+        type=float,
+        default=10.0,
+        help="ループ周期（秒）。gpt-5-mini は 1 推論 ≈10 秒かかる前提で大きめに設定してください",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="OpenAI VLM の温度 (省略=モデルのデフォルト固定値)",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=80)
     parser.add_argument(
         "--log-level",
@@ -100,18 +112,6 @@ def parse_args() -> argparse.Namespace:
         default=(0.15, 0.35),
         help="高さ比を FAR/MID/NEAR に分割する閾値",
     )
-    parser.add_argument(
-        "--vlm-scale",
-        type=float,
-        default=1.0,
-        help="VLM 入力前にフレームをこの倍率でリサイズ (例: 1.5 や 2.0)",
-    )
-    parser.add_argument(
-        "--crop-center-ratio",
-        type=float,
-        default=1.0,
-        help="VLM 入力前に中央をこの比率で正方形クロップ (1.0で無効)",
-    )
     return parser.parse_args()
 
 
@@ -126,6 +126,13 @@ class ColorGuardResult:
     height_ratio: float
 
 
+def _ensure_env() -> None:
+    """.env が存在すれば自動で読み込む（既存環境変数は優先）。"""
+
+    env_path = Path(__file__).parent / ".env"
+    load_dotenv(env_path, override=False)
+
+
 def _parse_json(text: str) -> Optional[Dict[str, object]]:
     import re
 
@@ -136,6 +143,39 @@ def _parse_json(text: str) -> Optional[Dict[str, object]]:
         except json.JSONDecodeError:
             continue
     return None
+
+
+def _extract_response_text(choice) -> str:
+    """Return assistant text content from ChatCompletion choice."""
+
+    message = getattr(choice, "message", None)
+    if message is None:
+        return ""
+
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, Sequence):
+        fragments = []
+        for part in content:
+            if isinstance(part, str):
+                fragments.append(part)
+                continue
+            text_attr = getattr(part, "text", None)
+            if isinstance(text_attr, str):
+                fragments.append(text_attr)
+                continue
+            if isinstance(part, dict):
+                text_val = part.get("text")
+                if isinstance(text_val, str):
+                    fragments.append(text_val)
+        return "\n".join(fragments)
+
+    text_attr = getattr(content, "text", None)
+    if isinstance(text_attr, str):
+        return text_attr
+    return ""
 
 
 def _coerce_hybrid(text: str, payload: Optional[Dict[str, object]]) -> Dict[str, object]:
@@ -257,72 +297,41 @@ class GptVLMRunner:
         model_id: str,
         *,
         mode: str,
-        temperature: float,
+        temperature: Optional[float],
         max_new_tokens: int,
-        vlm_scale: float = 1.0,
-        crop_center_ratio: float = 1.0,
     ) -> None:
         LOG.info("GPT VLM モデルを使用: %s", model_id)
         self.client = OpenAI()
         self.model_id = model_id
-        self.temperature = temperature
+        # gpt-5.* 系は API 側で温度が固定（1.0）のため、明示指定は無視する
+        if model_id.startswith("gpt-5") and temperature is not None:
+            if abs(temperature - 1.0) > 1e-6:
+                LOG.warning(
+                    "モデル %s は temperature を変更できません (指定 %.2f)。デフォルト値を使用します。",
+                    model_id,
+                    temperature,
+                )
+            self.temperature = None
+        else:
+            self.temperature = temperature
         self.max_new_tokens = max_new_tokens
         self.mode = mode
-        self.scale = vlm_scale
-        self.crop = crop_center_ratio
 
         if mode == "direct":
             self.system_prompt = (
-                "You are a vision model that controls a small robot car. "
-                "Look at the current camera frame and output EXACTLY ONE JSON with the next action.\n"
-                "Allowed actions: LEFT, RIGHT, FORWARD, STOP.\n"
-                "Keys: action (string), confidence (0.0-1.0).\n"
-                "Output format: {\"action\": \"LEFT\", \"confidence\": 0.74}"
+                'Respond only with JSON {"action":"LEFT|RIGHT|FORWARD|STOP"} and nothing else.'
             )
         elif mode == "describe":
-            self.system_prompt = (
-                "You are a vision model. List visible objects (short nouns) in the frame as a JSON array."
-            )
+            self.system_prompt = "Only reply with a JSON array of short nouns you see in the frame."
         else:  # hybrid (position + distance)
             self.system_prompt = (
-                "You are a vision model that controls a small robot car.\n"
-                "Task:\n"
-                "- Look at the current camera frame.\n"
-                "- Find a yellow box with the word \"TARGET\" written on it.\n"
-                "- Based on this single frame, classify:\n"
-                "  - position of the TARGET box: LEFT, CENTER, RIGHT.\n"
-                "  - distance to the TARGET box: FAR, MID, NEAR.\n"
-                "If you do NOT clearly see the yellow TARGET box:\n"
-                "- position = UNVISIBLE\n"
-                "- distance = NONE\n"
-                "- confidence = 0.0\n"
-                "Output format (very important):\n"
-                "- Return EXACTLY ONE JSON object. No code block, no extra text.\n"
-                "- Keys: position, distance, confidence\n"
-                "- position: one of [LEFT, CENTER, RIGHT, UNVISIBLE]\n"
-                "- distance: one of [FAR, MID, NEAR, NONE]\n"
-                "- confidence: number 0.0-1.0\n"
-                "Valid examples:\n"
-                "{\"position\": \"LEFT\", \"distance\": \"FAR\", \"confidence\": 0.82}\n"
-                "{\"position\": \"CENTER\", \"distance\": \"NEAR\", \"confidence\": 0.91}\n"
-                "{\"position\": \"UNVISIBLE\", \"distance\": \"NONE\", \"confidence\": 0.0}\n"
-                "Rules:\n"
-                "- Choose EXACTLY ONE value for position and EXACTLY ONE for distance.\n"
-                "- NEVER use any words other than the allowed values above.\n"
-                "- If unsure, output {\"position\":\"UNVISIBLE\",\"distance\":\"NONE\",\"confidence\":0.0}"
+                "Only reply with JSON {\"position\":\"LEFT|CENTER|RIGHT|UNVISIBLE\","
+                "\"distance\":\"FAR|MID|NEAR|NONE\",\"confidence\":0-1} describing the yellow TARGET box. "
+                "Use UNVISIBLE/NONE/0.0 if the box is missing."
             )
 
     def _prepare_image(self, frame_bgr) -> str:
-        frame = frame_bgr
-        h, w = frame.shape[:2]
-        if self.crop < 1.0:
-            side = int(min(h, w) * self.crop)
-            x0 = (w - side) // 2
-            y0 = (h - side) // 2
-            frame = frame[y0 : y0 + side, x0 : x0 + side]
-        if self.scale != 1.0:
-            frame = cv2.resize(frame, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_LINEAR)
-        ok, buf = cv2.imencode(".jpg", frame)
+        ok, buf = cv2.imencode(".jpg", frame_bgr)
         if not ok:
             raise RuntimeError("Failed to encode frame to JPEG")
         b64 = base64.b64encode(buf).decode("ascii")
@@ -336,22 +345,21 @@ class GptVLMRunner:
             {"type": "image_url", "image_url": {"url": image_url}},
         ]
 
-        resp = self.client.chat.completions.create(
+        request_kwargs = dict(
             model=self.model_id,
             messages=[
                 {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=self.max_new_tokens,
-            temperature=self.temperature,
+            max_completion_tokens=self.max_new_tokens,
         )
+        if self.temperature is not None:
+            request_kwargs["temperature"] = self.temperature
 
-        content = resp.choices[0].message.content
-        # content can be list[dict] or str depending on SDK
-        if isinstance(content, list):
-            raw_text = "\n".join(part.get("text", "") for part in content if part.get("type") == "text")
-        else:
-            raw_text = content or ""
+        resp = self.client.chat.completions.create(**request_kwargs)
+
+        choice = resp.choices[0]
+        raw_text = _extract_response_text(choice)
 
         payload = _parse_json(raw_text)
         if self.mode == "describe":
@@ -366,6 +374,7 @@ class GptVLMRunner:
 
 
 def main() -> int:
+    _ensure_env()
     args = parse_args()
 
     logging.basicConfig(
@@ -373,14 +382,15 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    if args.loop_interval < 5.0:
+        LOG.warning("loop-interval=%.2f 秒は短すぎます。推論 1 回あたり ≈10 秒を想定してください", args.loop_interval)
+
     client = RaspiAgentClient(args.agent_url)
     runner = GptVLMRunner(
         args.model_id,
         mode=args.mode,
         temperature=args.temperature,
         max_new_tokens=args.max_new_tokens,
-        vlm_scale=args.vlm_scale,
-        crop_center_ratio=args.crop_center_ratio,
     )
 
     save_dir: Optional[Path] = None
