@@ -1,8 +1,13 @@
-"""Utility script to run SmolVLM inference only (no motor commands)."""
+"""GPT VLM デバッグランナー（raspi_agent からフレーム取得、OpenAI VLM 推論のみ実施）。
+
+smolVLM での純 VLM 評価が失敗したため、同じインタフェースで gpt-5-mini-2025-08-07
+（ChatGPT VLM）を利用して比較する目的のスクリプト。モーター制御は行わない。
+"""
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import time
@@ -13,6 +18,7 @@ from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 from PIL import Image
+from openai import OpenAI
 
 from raspycar.agent_client import RaspiAgentClient
 
@@ -21,11 +27,11 @@ LOG = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="SmolVLM debug runner (fetch frame, run VLM, print result)."
+        description="GPT VLM debug runner (fetch frame, call gpt-5.1-mini, print result).",
     )
     parser.add_argument("--agent-url", required=True, help="raspi_agent のベースURL")
     parser.add_argument("--instruction", required=True, help="VLM へ渡す指示文")
-    parser.add_argument("--model-id", default="mlx-community/SmolVLM2-500M-Video-Instruct-mlx")
+    parser.add_argument("--model-id", default="gpt-5-mini-2025-08-07")
     parser.add_argument(
         "--mode",
         choices=["hybrid", "direct", "describe"],
@@ -98,13 +104,13 @@ def parse_args() -> argparse.Namespace:
         "--vlm-scale",
         type=float,
         default=1.0,
-        help="VLM に入力する前にフレームをこの倍率でリサイズ (例: 1.5 や 2.0)",
+        help="VLM 入力前にフレームをこの倍率でリサイズ (例: 1.5 や 2.0)",
     )
     parser.add_argument(
         "--crop-center-ratio",
         type=float,
         default=1.0,
-        help="VLM入力前に中央をこの比率で正方形クロップ (1.0で無効、0.6なら高さ/幅の60%中心を切り出し)",
+        help="VLM 入力前に中央をこの比率で正方形クロップ (1.0で無効)",
     )
     return parser.parse_args()
 
@@ -120,145 +126,6 @@ class ColorGuardResult:
     height_ratio: float
 
 
-class SmolVLMRunner:
-    """Wrapper around mlx-vlm that returns raw text + parsed payload."""
-
-    def __init__(
-        self,
-        model_id: str,
-        *,
-        mode: str,
-        temperature: float,
-        max_new_tokens: int,
-        vlm_scale: float = 1.0,
-        crop_center_ratio: float = 1.0,
-    ) -> None:
-        from mlx_vlm.generate import generate as mlx_generate
-        from mlx_vlm.prompt_utils import apply_chat_template
-        from mlx_vlm.utils import load as mlx_load
-
-        LOG.info("smolVLM モデル読込中: %s", model_id)
-        self._generate = mlx_generate
-        self._apply_chat_template = apply_chat_template
-        self.model, self.processor = mlx_load(model_id, trust_remote_code=True)
-        self.temperature = temperature
-        self.max_new_tokens = max_new_tokens
-        self.mode = mode
-        self.scale = vlm_scale
-        self.crop = crop_center_ratio
-
-        if mode == "direct":
-            self.system_prompt = (
-                "You control a differential-drive robot car. Respond ONLY with JSON shaped like "
-                '{{"command":"FORWARD","confidence":0.90}}. '
-                "The command must be exactly one of: LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP. "
-                "Do NOT output any other words or explanations."
-            )
-            self.user_prompt_template = (
-                "Instruction: {instruction}. Analyse the camera image, then reply ONLY with JSON "
-                'of the form {{"command":"<OPTION>","confidence":0.xx}}. Options: '
-                "LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP. No prose, no jokers, no TOKEN literal."
-            )
-        elif mode == "hybrid":
-            self.system_prompt = (
-                "You are a vision model that controls a small robot car.\n"
-                "Task:\n"
-                "- Look at the current camera frame.\n"
-                "- Find a yellow box with the word \"TARGET\" written on it.\n"
-                "- Classify the TARGET box:\n"
-                "  position: LEFT, CENTER, or RIGHT.\n"
-                "  distance: FAR, MID, or NEAR.\n"
-                "\n"
-                "Most frames DO CONTAIN the yellow TARGET box. Only use UNVISIBLE if the box is truly absent or fully out of view.\n"
-                "\n"
-                "If you do NOT clearly see the yellow TARGET box:\n"
-                "- position = \"UNVISIBLE\"\n"
-                "- distance = \"NONE\"\n"
-                "- confidence = 0.0\n"
-                "\n"
-                "Output format (very important):\n"
-                "- Return EXACTLY ONE JSON object.\n"
-                "- No code block, no explanation, no extra text.\n"
-                "- Keys: \"position\", \"distance\", \"confidence\".\n"
-                "- Allowed values:\n"
-                "  position: LEFT | CENTER | RIGHT | UNVISIBLE\n"
-                "  distance: FAR | MID | NEAR | NONE\n"
-                "  confidence: a number between 0.0 and 1.0\n"
-                "\n"
-                "Valid examples:\n"
-                "{\"position\":\"LEFT\",\"distance\":\"FAR\",\"confidence\":0.82}\n"
-                "{\"position\":\"CENTER\",\"distance\":\"NEAR\",\"confidence\":0.91}\n"
-                "{\"position\":\"UNVISIBLE\",\"distance\":\"NONE\",\"confidence\":0.0}\n"
-                "\n"
-                "Rules:\n"
-                "- Choose EXACTLY ONE value for position and EXACTLY ONE value for distance.\n"
-                "- NEVER use any words other than the allowed values above.\n"
-                "- If the yellow TARGET box is visible in ANY part of the frame, you MUST output LEFT/CENTER/RIGHT and FAR/MID/NEAR (not UNVISIBLE/NONE).\n"
-                "- Only if the yellow TARGET box is completely absent or occluded, output {\"position\":\"UNVISIBLE\",\"distance\":\"NONE\",\"confidence\":0.0}."
-            )
-            self.user_prompt_template = (
-                "Instruction: {instruction}\n"
-                "Follow the rules above and return ONLY one JSON object."
-            )
-        else:  # describe
-            self.system_prompt = (
-                "You are an assistant that lists what is visible in the camera frame. Respond ONLY with JSON "
-                '{{"objects": ["object1", "object2", ...]}}. Use short nouns. No extra text.'
-            )
-            self.user_prompt_template = (
-                "Describe briefly what you see in the frame as a JSON list named objects."
-            )
-
-    def run(self, frame_bgr, instruction: str) -> Dict[str, object]:
-        messages = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        messages.append(
-            {
-                "role": "user",
-                "content": self.user_prompt_template.format(instruction=instruction),
-            }
-        )
-        prompt = self._apply_chat_template(
-            self.processor,
-            self.model.config,
-            messages,
-            num_images=1,
-            add_generation_prompt=True,
-        )
-        if self.crop and 0.0 < self.crop < 1.0:
-            h, w = frame_bgr.shape[:2]
-            size = int(min(h, w) * self.crop)
-            cx, cy = w // 2, h // 2
-            x1 = max(0, cx - size // 2)
-            y1 = max(0, cy - size // 2)
-            frame_bgr = frame_bgr[y1 : y1 + size, x1 : x1 + size]
-        if self.scale and self.scale != 1.0:
-            frame_bgr = cv2.resize(
-                frame_bgr,
-                None,
-                fx=self.scale,
-                fy=self.scale,
-                interpolation=cv2.INTER_LINEAR,
-            )
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        result = self._generate(
-            self.model,
-            self.processor,
-            prompt=prompt,
-            image=[Image.fromarray(rgb)],
-            temperature=self.temperature,
-            max_tokens=self.max_new_tokens,
-            verbose=False,
-        )
-        text = getattr(result, "text", "")
-        LOG.debug("smolVLM 生応答: %s", text)
-        payload = _parse_json(text)
-        if self.mode == "hybrid":
-            payload = _coerce_hybrid(text, payload)
-        return {"raw": text, "json": payload}
-
-
 def _parse_json(text: str) -> Optional[Dict[str, object]]:
     import re
 
@@ -268,12 +135,12 @@ def _parse_json(text: str) -> Optional[Dict[str, object]]:
             return json.loads(snippet)
         except json.JSONDecodeError:
             continue
-
     return None
 
 
 def _coerce_hybrid(text: str, payload: Optional[Dict[str, object]]) -> Dict[str, object]:
-    """Hybrid 用: 生テキストに含まれる最初の有効ラベルを強制的に抽出・整形する。"""
+    """Hybrid 用: 生テキストに含まれる最初の有効ラベルを強制抽出・整形。"""
+
     import re
 
     upper = text.upper()
@@ -291,7 +158,6 @@ def _coerce_hybrid(text: str, payload: Optional[Dict[str, object]]) -> Dict[str,
     else:
         conf = None
 
-    # 補完ロジック
     if pos and not dist:
         dist = "FAR" if pos != "UNVISIBLE" else "NONE"
     elif dist and not pos:
@@ -301,11 +167,7 @@ def _coerce_hybrid(text: str, payload: Optional[Dict[str, object]]) -> Dict[str,
     if conf is None:
         conf = float(payload.get("confidence", 0.0)) if payload else 0.0
 
-    return {
-        "position": pos,
-        "distance": dist,
-        "confidence": conf,
-    }
+    return {"position": pos, "distance": dist, "confidence": conf}
 
 
 def _estimate_by_color(
@@ -387,15 +249,132 @@ def _draw_overlay(frame_bgr, vlm_json: Optional[Dict[str, object]], guard: Optio
     return canvas
 
 
+class GptVLMRunner:
+    """Wrapper around OpenAI Chat Completions (GPT-5.1-mini)."""
+
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        mode: str,
+        temperature: float,
+        max_new_tokens: int,
+        vlm_scale: float = 1.0,
+        crop_center_ratio: float = 1.0,
+    ) -> None:
+        LOG.info("GPT VLM モデルを使用: %s", model_id)
+        self.client = OpenAI()
+        self.model_id = model_id
+        self.temperature = temperature
+        self.max_new_tokens = max_new_tokens
+        self.mode = mode
+        self.scale = vlm_scale
+        self.crop = crop_center_ratio
+
+        if mode == "direct":
+            self.system_prompt = (
+                "You are a vision model that controls a small robot car. "
+                "Look at the current camera frame and output EXACTLY ONE JSON with the next action.\n"
+                "Allowed actions: LEFT, RIGHT, FORWARD, STOP.\n"
+                "Keys: action (string), confidence (0.0-1.0).\n"
+                "Output format: {\"action\": \"LEFT\", \"confidence\": 0.74}"
+            )
+        elif mode == "describe":
+            self.system_prompt = (
+                "You are a vision model. List visible objects (short nouns) in the frame as a JSON array."
+            )
+        else:  # hybrid (position + distance)
+            self.system_prompt = (
+                "You are a vision model that controls a small robot car.\n"
+                "Task:\n"
+                "- Look at the current camera frame.\n"
+                "- Find a yellow box with the word \"TARGET\" written on it.\n"
+                "- Based on this single frame, classify:\n"
+                "  - position of the TARGET box: LEFT, CENTER, RIGHT.\n"
+                "  - distance to the TARGET box: FAR, MID, NEAR.\n"
+                "If you do NOT clearly see the yellow TARGET box:\n"
+                "- position = UNVISIBLE\n"
+                "- distance = NONE\n"
+                "- confidence = 0.0\n"
+                "Output format (very important):\n"
+                "- Return EXACTLY ONE JSON object. No code block, no extra text.\n"
+                "- Keys: position, distance, confidence\n"
+                "- position: one of [LEFT, CENTER, RIGHT, UNVISIBLE]\n"
+                "- distance: one of [FAR, MID, NEAR, NONE]\n"
+                "- confidence: number 0.0-1.0\n"
+                "Valid examples:\n"
+                "{\"position\": \"LEFT\", \"distance\": \"FAR\", \"confidence\": 0.82}\n"
+                "{\"position\": \"CENTER\", \"distance\": \"NEAR\", \"confidence\": 0.91}\n"
+                "{\"position\": \"UNVISIBLE\", \"distance\": \"NONE\", \"confidence\": 0.0}\n"
+                "Rules:\n"
+                "- Choose EXACTLY ONE value for position and EXACTLY ONE for distance.\n"
+                "- NEVER use any words other than the allowed values above.\n"
+                "- If unsure, output {\"position\":\"UNVISIBLE\",\"distance\":\"NONE\",\"confidence\":0.0}"
+            )
+
+    def _prepare_image(self, frame_bgr) -> str:
+        frame = frame_bgr
+        h, w = frame.shape[:2]
+        if self.crop < 1.0:
+            side = int(min(h, w) * self.crop)
+            x0 = (w - side) // 2
+            y0 = (h - side) // 2
+            frame = frame[y0 : y0 + side, x0 : x0 + side]
+        if self.scale != 1.0:
+            frame = cv2.resize(frame, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_LINEAR)
+        ok, buf = cv2.imencode(".jpg", frame)
+        if not ok:
+            raise RuntimeError("Failed to encode frame to JPEG")
+        b64 = base64.b64encode(buf).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
+
+    def run(self, frame_bgr, instruction: str) -> Dict[str, object]:
+        image_url = self._prepare_image(frame_bgr)
+
+        user_content = [
+            {"type": "text", "text": instruction},
+            {"type": "image_url", "image_url": {"url": image_url}},
+        ]
+
+        resp = self.client.chat.completions.create(
+            model=self.model_id,
+            messages=[
+                {"role": "system", "content": [{"type": "text", "text": self.system_prompt}]},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+        )
+
+        content = resp.choices[0].message.content
+        # content can be list[dict] or str depending on SDK
+        if isinstance(content, list):
+            raw_text = "\n".join(part.get("text", "") for part in content if part.get("type") == "text")
+        else:
+            raw_text = content or ""
+
+        payload = _parse_json(raw_text)
+        if self.mode == "describe":
+            parsed = payload if isinstance(payload, list) else None
+            return {"raw": raw_text, "json": parsed}
+        elif self.mode == "direct":
+            parsed = payload if isinstance(payload, dict) else None
+            return {"raw": raw_text, "json": parsed}
+        else:
+            coerced = _coerce_hybrid(raw_text, payload)
+            return {"raw": raw_text, "json": coerced}
+
+
 def main() -> int:
     args = parse_args()
+
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
     client = RaspiAgentClient(args.agent_url)
-    runner = SmolVLMRunner(
+    runner = GptVLMRunner(
         args.model_id,
         mode=args.mode,
         temperature=args.temperature,
@@ -421,6 +400,7 @@ def main() -> int:
             else:
                 LOG.debug("warmup frame %d 取得", i + 1)
                 time.sleep(args.loop_interval)
+
     try:
         while True:
             loop_start = time.perf_counter()
@@ -486,7 +466,6 @@ def main() -> int:
                         }
                         LOG.info("color-guard により結果を補正しました (conf=%.2f)", guard_result.confidence)
                 else:
-                    # 色で見つからない場合は確実に UNVISIBLE/NONE を返す
                     result["json"] = {
                         "position": "UNVISIBLE",
                         "distance": "NONE",
@@ -509,7 +488,7 @@ def main() -> int:
                         fy=args.display_scale,
                         interpolation=cv2.INTER_LINEAR,
                     )
-                cv2.imshow("SmolVLM Debug", annotated)
+                cv2.imshow("GPT VLM Debug", annotated)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     LOG.info("'q' 入力で終了します")

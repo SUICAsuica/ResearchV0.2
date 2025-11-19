@@ -1,0 +1,253 @@
+(.venv) shori@MacBookPro raspycar % PYTHONPATH=.. HF_HUB_OFFLINE=1 python pc_vlm_debug.py \
+  --agent-url http://192.168.0.26:8080 \
+  --instruction "Describe what you see." \
+  --mode describe \
+  --log-level DEBUG \
+  --loop-interval 3.0 \
+  --max-new-tokens 32 \
+  --temperature 0.0 \
+  --warmup-frames 3 \
+  --save-frame-dir frames \
+  --model-id /Users/shori/laboratory/Researchv2.0/raspycar/models/smolvlm2-mlx
+
+2025-11-18 17:44:31,279 INFO __main__: smolVLM モデル読込中: /Users/shori/laboratory/Researchv2.0/raspycar/models/smolvlm2-mlx
+2025-11-18 17:44:31,540 INFO __main__: ウォームアップとして先頭 3 フレームを破棄します
+2025-11-18 17:44:31,542 DEBUG urllib3.connectionpool: Starting new HTTP connection (1): 192.168.0.26:8080
+2025-11-18 17:44:31,563 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455471.540844 HTTP/1.1" 200 22358
+2025-11-18 17:44:31,573 DEBUG __main__: warmup frame 1 取得
+2025-11-18 17:44:34,591 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455474.57547 HTTP/1.1" 200 22420
+2025-11-18 17:44:34,605 DEBUG __main__: warmup frame 2 取得
+2025-11-18 17:44:37,626 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455477.61025 HTTP/1.1" 200 22557
+2025-11-18 17:44:37,640 DEBUG __main__: warmup frame 3 取得
+2025-11-18 17:44:40,661 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455480.644881 HTTP/1.1" 200 22607
+2025-11-18 17:44:40,681 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0001.jpg
+2025-11-18 17:44:42,295 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:42,295 INFO __main__: ---- 推論 #1 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:44:42,296 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:43,665 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455483.650072 HTTP/1.1" 200 22836
+2025-11-18 17:44:43,681 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0002.jpg
+2025-11-18 17:44:45,275 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:45,275 INFO __main__: ---- 推論 #2 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:44:45,275 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:46,669 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455486.655137 HTTP/1.1" 200 23038
+2025-11-18 17:44:46,686 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0003.jpg
+2025-11-18 17:44:48,332 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow"},{"name":"phone","type":"phone","color":"blue"},{"name":"notebook
+2025-11-18 17:44:48,332 INFO __main__: ---- 推論 #3 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow"
+}
+2025-11-18 17:44:48,332 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow"},{"name":"phone","type":"phone","color":"blue"},{"name":"notebook
+2025-11-18 17:44:49,678 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455489.6603541 HTTP/1.1" 200 23051
+2025-11-18 17:44:49,694 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0004.jpg
+2025-11-18 17:44:51,260 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:51,260 INFO __main__: ---- 推論 #4 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:44:51,260 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:52,682 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455492.665484 HTTP/1.1" 200 23045
+2025-11-18 17:44:52,705 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0005.jpg
+2025-11-18 17:44:54,218 DEBUG __main__: smolVLM 生応答:  [{"name":"TARGET","type":"box"}]
+2025-11-18 17:44:54,218 INFO __main__: ---- 推論 #5 ----
+{
+  "name": "TARGET",
+  "type": "box"
+}
+2025-11-18 17:44:54,218 INFO __main__: raw= [{"name":"TARGET","type":"box"}]
+2025-11-18 17:44:55,684 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455495.670599 HTTP/1.1" 200 22811
+2025-11-18 17:44:55,706 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0006.jpg
+2025-11-18 17:44:57,282 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:57,282 INFO __main__: ---- 推論 #6 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:44:57,282 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:44:58,689 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455498.6757162 HTTP/1.1" 200 22481
+2025-11-18 17:44:58,705 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0007.jpg
+2025-11-18 17:45:00,288 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:00,288 INFO __main__: ---- 推論 #7 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:00,288 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:01,698 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455501.678354 HTTP/1.1" 200 22664
+2025-11-18 17:45:01,713 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0008.jpg
+2025-11-18 17:45:03,284 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:03,284 INFO __main__: ---- 推論 #8 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:03,284 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:04,697 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455504.6834738 HTTP/1.1" 200 25351
+2025-11-18 17:45:04,715 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0009.jpg
+2025-11-18 17:45:06,288 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:06,288 INFO __main__: ---- 推論 #9 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:06,288 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:07,704 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455507.6885812 HTTP/1.1" 200 25322
+2025-11-18 17:45:07,721 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0010.jpg
+2025-11-18 17:45:09,342 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","size":"10x10","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:09,342 INFO __main__: ---- 推論 #10 ----
+{
+  "name": "target",
+  "type": "box",
+  "size": "10x10",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:09,342 INFO __main__: raw= [{"name":"target","type":"box","size":"10x10","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:10,709 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455510.693642 HTTP/1.1" 200 25272
+2025-11-18 17:45:10,726 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0011.jpg
+2025-11-18 17:45:12,294 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:12,294 INFO __main__: ---- 推論 #11 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:12,294 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:13,715 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455513.6987782 HTTP/1.1" 200 25307
+2025-11-18 17:45:13,733 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0012.jpg
+2025-11-18 17:45:15,308 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:15,308 INFO __main__: ---- 推論 #12 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:15,308 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:16,718 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455516.703987 HTTP/1.1" 200 25381
+2025-11-18 17:45:16,737 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0013.jpg
+2025-11-18 17:45:18,312 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:18,312 INFO __main__: ---- 推論 #13 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:18,313 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:19,724 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455519.7090292 HTTP/1.1" 200 25332
+2025-11-18 17:45:19,745 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0014.jpg
+2025-11-18 17:45:21,314 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:21,314 INFO __main__: ---- 推論 #14 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:21,314 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:22,732 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455522.714165 HTTP/1.1" 200 26156
+2025-11-18 17:45:22,746 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0015.jpg
+2025-11-18 17:45:24,314 DEBUG __main__: smolVLM 生応答:  [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:24,314 INFO __main__: ---- 推論 #15 ----
+{
+  "name": "target",
+  "type": "box",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:24,314 INFO __main__: raw= [{"name":"target","type":"box","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:25,731 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455525.719262 HTTP/1.1" 200 25285
+2025-11-18 17:45:25,750 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0016.jpg
+2025-11-18 17:45:27,388 DEBUG __main__: smolVLM 生応答:  [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Phone", "
+2025-11-18 17:45:27,389 INFO __main__: ---- 推論 #16 ----
+{
+  "id": "1",
+  "name": "Target",
+  "type": "object"
+}
+2025-11-18 17:45:27,389 INFO __main__: raw= [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Phone", "
+2025-11-18 17:45:28,738 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455528.7243679 HTTP/1.1" 200 25327
+2025-11-18 17:45:28,756 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0017.jpg
+2025-11-18 17:45:30,265 DEBUG __main__: smolVLM 生応答:  [{"name":"TARGET","type":"box"}]
+2025-11-18 17:45:30,265 INFO __main__: ---- 推論 #17 ----
+{
+  "name": "TARGET",
+  "type": "box"
+}
+2025-11-18 17:45:30,265 INFO __main__: raw= [{"name":"TARGET","type":"box"}]
+2025-11-18 17:45:31,743 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455531.7294762 HTTP/1.1" 200 25381
+2025-11-18 17:45:31,758 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0018.jpg
+2025-11-18 17:45:33,396 DEBUG __main__: smolVLM 生応答:  [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Office", "
+2025-11-18 17:45:33,396 INFO __main__: ---- 推論 #18 ----
+{
+  "id": "1",
+  "name": "Target",
+  "type": "object"
+}
+2025-11-18 17:45:33,396 INFO __main__: raw= [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Office", "
+2025-11-18 17:45:34,748 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455534.734551 HTTP/1.1" 200 25421
+2025-11-18 17:45:34,765 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0019.jpg
+2025-11-18 17:45:36,406 DEBUG __main__: smolVLM 生応答:  [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Office", "
+2025-11-18 17:45:36,406 INFO __main__: ---- 推論 #19 ----
+{
+  "id": "1",
+  "name": "Target",
+  "type": "object"
+}
+2025-11-18 17:45:36,406 INFO __main__: raw= [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Office", "
+2025-11-18 17:45:37,753 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455537.739682 HTTP/1.1" 200 25429
+2025-11-18 17:45:37,769 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0020.jpg
+2025-11-18 17:45:39,405 DEBUG __main__: smolVLM 生応答:  [{"name":"TARGET","type":"box","size":"100x100","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:39,405 INFO __main__: ---- 推論 #20 ----
+{
+  "name": "TARGET",
+  "type": "box",
+  "size": "100x100",
+  "color": "yellow",
+  "text": "TARGET"
+}
+2025-11-18 17:45:39,405 INFO __main__: raw= [{"name":"TARGET","type":"box","size":"100x100","color":"yellow","text":"TARGET"}}]
+2025-11-18 17:45:40,757 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455540.744778 HTTP/1.1" 200 25149
+2025-11-18 17:45:40,774 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0021.jpg
+2025-11-18 17:45:42,281 DEBUG __main__: smolVLM 生応答:  [{"name":"TARGET","type":"box"}]
+2025-11-18 17:45:42,281 INFO __main__: ---- 推論 #21 ----
+{
+  "name": "TARGET",
+  "type": "box"
+}
+2025-11-18 17:45:42,281 INFO __main__: raw= [{"name":"TARGET","type":"box"}]
+2025-11-18 17:45:43,762 DEBUG urllib3.connectionpool: http://192.168.0.26:8080 "GET /frame.jpg?ts=1763455543.749886 HTTP/1.1" 200 25108
+2025-11-18 17:45:43,782 DEBUG __main__: フレームを保存しました: frames/20251118-174431_frame_0022.jpg
+2025-11-18 17:45:45,423 DEBUG __main__: smolVLM 生応答:  [{"id": "1", "name": "Target", "type": "object"}, {"id": "2", "name": "Computer", "
+2025-11-18 17:45:45,423 INFO __main__: ---- 推論 #22 ----
+{
+  "id": "1",
+  "name": "Target",
+  "type": "object"
+}

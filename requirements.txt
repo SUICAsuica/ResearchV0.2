@@ -6,3 +6,5 @@ pillow>=10.0
 num2words>=0.5
 mlx>=0.12.0; sys_platform == "darwin"
 mlx-vlm>=0.1.0; sys_platform == "darwin"
+openai>=1.50.2
+python-dotenv>=1.0.1

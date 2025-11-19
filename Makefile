@@ -47,3 +47,17 @@ pc-hybrid:
 		--instruction "$(HYBRID_INSTRUCTION)" \
 		--model-id "$(MODEL_DIR)" \
 		$(EXTRA_ARGS)
+
+pc-direct-gpt:
+	PYTHONPATH=$(PYTHONPATH) python pc_controller_direct_gpt.py \
+		--agent-url "$(AGENT_URL)" \
+		--instruction "$(DIRECT_INSTRUCTION)" \
+		--model-id gpt-5-mini-2025-08-07 \
+		$(EXTRA_ARGS)
+
+pc-hybrid-gpt:
+	PYTHONPATH=$(PYTHONPATH) python pc_controller_hybrid_gpt.py \
+		--agent-url "$(AGENT_URL)" \
+		--instruction "$(HYBRID_INSTRUCTION)" \
+		--model-id gpt-5-mini-2025-08-07 \
+		$(EXTRA_ARGS)
