@@ -39,6 +39,7 @@
 
 ## 更新履歴
 
+- 2025-11-19: raspi_agent の `COMMAND_VECTORS` を調整し、前進時の左流れ補正と微小な左右補正（少し左/少し右のアーク移動）を実装。`FORWARD`/`FORWARD_SLOW` の出力を下げて細かい前進ができるようにした。
 - 2025-11-19: smolVLM 純VLM評価で検出失敗が続いた経緯を残しつつ、外部 ChatGPT VLM（gpt-5.1-mini）を使うための新スクリプト `pc_vlm_debug_gpt.py` を追加。既存 `pc_vlm_debug.py` は記録用に保持。
 - 2025-11-18: 自宅 Pi が 192.168.0.26 になるケースに備え、`env.home.26.sh` を追加。
 - 2025-11-16: 自宅側の静的 IP を 192.168.0.13 に変更。README の例と env.home.sh を更新。

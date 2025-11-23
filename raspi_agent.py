@@ -20,15 +20,45 @@ from raspycar.hardware import MotorController
 LOG = logging.getLogger(__name__)
 
 
-COMMAND_VECTORS: Dict[str, Tuple[float, float]] = {
-    "STOP": (0.0, 0.0),
-    # 現状の配線では教材と正転方向が逆なので、符号を反転させて整合させる。
-    "FORWARD": (-0.8, -0.8),
-    "FORWARD_SLOW": (-0.4, -0.4),
-    "BACKWARD": (0.6, 0.6),
-    "LEFT": (-0.4, 0.4),
-    "RIGHT": (0.4, -0.4),
-}
+# --------------------------------------------------------------------------- #
+# コマンドベクトル生成（ステアリングオフセット適用）
+# --------------------------------------------------------------------------- #
+DEFAULT_STEER_OFFSET = -0.025  # 負値で「右寄せ」、正値で「左寄せ」補正
+
+
+def _apply_offset(vector: Tuple[float, float], steer_offset: float) -> Tuple[float, float]:
+    """左右のモータ出力にオフセットを適用するヘルパ。"""
+    left, right = vector
+    return (left + steer_offset, right - steer_offset)
+
+
+def build_command_vectors(
+    steer_offset: float,
+    *,
+    slow_ratio: float = 0.4,
+) -> Dict[str, Tuple[float, float]]:
+    """
+    ステアリングオフセット込みのコマンド辞書を生成する。
+
+    :param steer_offset: 前進系コマンドに足す左右差。負なら右寄せ。
+    :param slow_ratio: FORWARD_SLOW に対してオフセットを何倍に縮めるか。
+    """
+    forward_base = -0.675  # 片側の基準速度（前進）
+    slow_base = -0.29      # 前進スローの基準速度
+    slow_offset = steer_offset * slow_ratio
+
+    return {
+        "STOP": (0.0, 0.0),
+        # 現状の配線では教材と正転方向が逆なので、符号を反転させて整合させる。
+        "FORWARD": _apply_offset((forward_base, forward_base), steer_offset),
+        # 細かい前進調整用に速度をさらに落としたもの。
+        "FORWARD_SLOW": _apply_offset((slow_base, slow_base), slow_offset),
+        # 後退は左右差を付けず素直に動かす（必要なら別途調整）。
+        "BACKWARD": (0.6, 0.6),
+        # 左右コマンドはその場回頭ではなく「少し左/少し右」の補正にする。
+        "LEFT": (-0.30, -0.60),
+        "RIGHT": (-0.60, -0.30),
+    }
 
 
 class CameraWorker:
@@ -149,8 +179,10 @@ class RobotAgent:
         motor: MotorController,
         *,
         watchdog_timeout: float,
+        command_vectors: Dict[str, Tuple[float, float]],
     ) -> None:
         self._motor = motor
+        self._command_vectors = command_vectors
         self._watchdog_timeout = max(0.5, watchdog_timeout)
         self._last_command = "STOP"
         self._last_timestamp = 0.0
@@ -175,7 +207,7 @@ class RobotAgent:
         command = command.strip().upper()
         if command == "PING":
             return {"status": "PONG"}
-        vector = COMMAND_VECTORS.get(command)
+        vector = self._command_vectors.get(command)
         if vector is None:
             raise ValueError(f"Unknown command: {command}")
         self._motor.set_speed(*vector)
@@ -322,6 +354,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-height", type=int, default=480)
     parser.add_argument("--camera-fps", type=float, default=2.0)
     parser.add_argument("--watchdog-timeout", type=float, default=2.0)
+    parser.add_argument(
+        "--steer-offset",
+        type=float,
+        default=DEFAULT_STEER_OFFSET,
+        help="前進時の左右差を補正する値（負で右寄せ、正で左寄せ）",
+    )
+    parser.add_argument(
+        "--servo-center",
+        type=float,
+        default=0.0,
+        help="起動直後にカメラサーボへ書き込む角度（度）。サーボが左に寝る場合はここで調整。",
+    )
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--dry-run", action="store_true", help="強制的にモータ制御を無効化")
     return parser.parse_args()
@@ -341,8 +385,20 @@ def main() -> int:
         height=args.camera_height,
         fps=args.camera_fps,
     )
+    # 起動時にサーボを既定角へ合わせておく（パルス初期化で左に振れる個体対策）。
+    try:
+        motor.set_servo_angle(args.servo_center)
+        LOG.info("サーボ初期角を %.1f° に設定しました", args.servo_center)
+    except Exception:
+        LOG.warning("サーボ初期角の設定に失敗しました（dry-run もしくはサーボ未接続の可能性）")
+
     camera.start()
-    agent = RobotAgent(motor, watchdog_timeout=args.watchdog_timeout)
+    command_vectors = build_command_vectors(args.steer_offset)
+    LOG.info(
+        "ステアリング補正値 steer_offset=%.3f を使用してコマンドベクトルを生成しました",
+        args.steer_offset,
+    )
+    agent = RobotAgent(motor, watchdog_timeout=args.watchdog_timeout, command_vectors=command_vectors)
     agent.start()
 
     handler_cls = build_http_handler(agent, camera)

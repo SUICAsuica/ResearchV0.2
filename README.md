@@ -25,8 +25,10 @@ GPIO 権限エラーを避けつつ、カメラは教材の MJPEG を流用す�
      -m raspycar.raspi_agent \
        --bind 0.0.0.0 --port 8080 \
        --camera-source http://127.0.0.1:8899/stream.mjpg \
-       --camera-width 640 --camera-height 480 --camera-fps 5
+       --camera-width 800 --camera-height 600 --camera-fps 5 \
+       --servo-center -50
    ```
+   - 起動直後にサーボが左へ寝る個体は `--servo-center` で中央合わせを調整できる（度数。負で左寄せ補正、正で右寄せ補正）。実機では `-50` で中央に合うことを確認。
    - 起動ログに `MotorController initialised ...` が出て、`dry_run` が false ならモータ制御有効。
    - Pi 5 / 新カーネルで RPi.GPIO が認識しない場合は `sudo apt-get install python3-rpi-lgpio` と `pip install rpi-lgpio` を入れてから同コマンドを実行。
 
