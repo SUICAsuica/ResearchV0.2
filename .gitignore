@@ -4,3 +4,4 @@ __pycache__/
 model.safetensors
 models/
 .env
+.env
