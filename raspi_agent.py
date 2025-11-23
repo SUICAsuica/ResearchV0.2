@@ -23,7 +23,7 @@ LOG = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # コマンドベクトル生成（ステアリングオフセット適用）
 # --------------------------------------------------------------------------- #
-DEFAULT_STEER_OFFSET = -0.025  # 負値で「右寄せ」、正値で「左寄せ」補正
+DEFAULT_STEER_OFFSET = 0.0  # まずは補正なしで左右差の有無を確認する
 
 
 def _apply_offset(vector: Tuple[float, float], steer_offset: float) -> Tuple[float, float]:
@@ -38,26 +38,30 @@ def build_command_vectors(
     slow_ratio: float = 0.4,
 ) -> Dict[str, Tuple[float, float]]:
     """
-    ステアリングオフセット込みのコマンド辞書を生成する。
+    ステアリングオフセット込みのコマンド辞書を生成する（シンプル版）。
 
-    :param steer_offset: 前進系コマンドに足す左右差。負なら右寄せ。
-    :param slow_ratio: FORWARD_SLOW に対してオフセットを何倍に縮めるか。
+    :param steer_offset: 前進系コマンドに足す左右差。負なら右寄せ、正なら左寄せ。
+    :param slow_ratio: FORWARD_SLOW の速度縮小率。
     """
-    forward_base = -0.675  # 片側の基準速度（前進）
-    slow_base = -0.29      # 前進スローの基準速度
-    slow_offset = steer_offset * slow_ratio
+    # 前進のベース値（完全左右対称）。オフセットは確認後に少しずつ入れる。
+    fwd_base = -0.55
+    fwd_left = fwd_base + steer_offset
+    fwd_right = fwd_base - steer_offset
+
+    slow_left = fwd_left * slow_ratio
+    slow_right = fwd_right * slow_ratio
 
     return {
         "STOP": (0.0, 0.0),
-        # 現状の配線では教材と正転方向が逆なので、符号を反転させて整合させる。
-        "FORWARD": _apply_offset((forward_base, forward_base), steer_offset),
-        # 細かい前進調整用に速度をさらに落としたもの。
-        "FORWARD_SLOW": _apply_offset((slow_base, slow_base), slow_offset),
-        # 後退は左右差を付けず素直に動かす（必要なら別途調整）。
+        "FORWARD": (fwd_left, fwd_right),
+        "FORWARD_SLOW": (slow_left, slow_right),
         "BACKWARD": (0.6, 0.6),
-        # 左右コマンドはその場回頭ではなく「少し左/少し右」の補正にする。
-        "LEFT": (-0.30, -0.60),
-        "RIGHT": (-0.60, -0.30),
+        # 左はごく弱い左カーブ（右より +0.02）、右は大きめの差分で確実に右へ。
+        # 左モータ主体で操舵する。右モータは一定の弱前進（負が前進）。
+        # LEFT: 左モータを少し前進させるが右より遅くして左へアーク。
+        # RIGHT: 左モータを逆転させて右へ回頭。過回頭防止のため弱めの逆転に留める。
+        "LEFT": (-0.50, -0.30),
+        "RIGHT": (-0.55, -0.25),
     }
 
 
