@@ -14,8 +14,10 @@ import argparse
 import base64
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
@@ -26,17 +28,29 @@ from openai import OpenAI
 from raspycar.agent_client import RaspiAgentClient
 
 LOG = logging.getLogger(__name__)
+DEFAULT_INSTRUCTION = (
+    "You are a detector, not a driver. Look at the image and report only where the yellow box "
+    "(with the word TARGET) appears and how far it is. Return ONLY JSON "
+    "{\"position\":\"LEFT|CENTER|RIGHT|UNVISIBLE\",\"distance\":\"FAR|MID|NEAR|NONE\",\"confidence\":0-1}. "
+    "If the box is not visible, use UNVISIBLE/NONE/0.0. Never output driving commands or prose."
+)
 
 OPPOSITE = {"LEFT": "RIGHT", "RIGHT": "LEFT"}
+ALLOWED_POSITIONS = {"LEFT", "CENTER", "RIGHT", "UNVISIBLE"}
+ALLOWED_DISTANCES = {"FAR", "MID", "NEAR", "NONE"}
+ALLOWED_COMMANDS = {"FORWARD", "FORWARD_SLOW", "LEFT", "RIGHT", "STOP"}
 
 
 def _ensure_env():
     env_path = Path(__file__).parent / ".env"
-    load_dotenv(env_path, override=False)
+    load_dotenv(env_path, override=True)
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        LOG.debug("OPENAI_API_KEY loaded (last4=%s)", key[-4:])
 
 
 class CommandGovernor:
-    def __init__(self, *, stop_confirmation_loops: int = 2) -> None:
+    def __init__(self, *, stop_confirmation_loops: int = 1) -> None:
         self._stop_confirmation = max(1, stop_confirmation_loops)
         self._pending_stop = 0
         self._last_command: str = "STOP"
@@ -126,12 +140,16 @@ POSITION_RULES: Dict[str, str] = {
     "LEFT": "LEFT",
     "RIGHT": "RIGHT",
     "CENTER": "FORWARD",
+    # ターゲットが見えないときは安全に停止
+    "UNVISIBLE": "STOP",
 }
 
 DISTANCE_RULES: Dict[str, str] = {
     "FAR": "FORWARD",
     "MID": "FORWARD_SLOW",
     "NEAR": "STOP",
+    # 距離不明時も暴走を避ける
+    "NONE": "STOP",
 }
 
 
@@ -143,6 +161,31 @@ def _encode_image(frame_bgr) -> str:
     return f"data:image/jpeg;base64,{b64}"
 
 
+def _extract_from_choice(ch) -> str:
+    msg = ch.message
+    txt = ""
+    content_local = msg.content
+    if isinstance(content_local, list):
+        txt = "\n".join(
+            part.get("text", "") for part in content_local if part.get("type") in {"text", "output_text"}
+        )
+    elif content_local:
+        txt = str(content_local)
+    if (not txt) and getattr(msg, "tool_calls", None):
+        tc = msg.tool_calls[0]
+        try:
+            txt = tc.function.arguments or ""
+        except Exception:
+            txt = ""
+    LOG.debug(
+        "GPT 応答抽出: %s (finish_reason=%s, tool_calls=%s)",
+        txt,
+        ch.finish_reason,
+        bool(getattr(msg, "tool_calls", None)),
+    )
+    return txt
+
+
 class GptLocator:
     def __init__(
         self,
@@ -150,7 +193,6 @@ class GptLocator:
         *,
         system_prompt: str,
         user_prompt_template: str,
-        temperature: float,
         max_new_tokens: int,
     ) -> None:
         _ensure_env()
@@ -158,15 +200,9 @@ class GptLocator:
         self.model_id = model_id
         self.system_prompt = system_prompt
         self.user_prompt_template = user_prompt_template
-        if model_id.startswith("gpt-5") and temperature is not None:
-            if abs(temperature - 1.0) > 1e-6:
-                LOG.warning("モデル %s は temperature を変更できません (指定 %.2f)。デフォルト値を使用します。", model_id, temperature)
-            self.temperature = None
-        else:
-            self.temperature = temperature
         self.max_new_tokens = max_new_tokens
 
-    def analyse(self, frame_bgr, instruction: str) -> SpatialEstimate:
+    def analyse(self, frame_bgr, instruction: str) -> tuple[SpatialEstimate, bool]:
         image_url = _encode_image(frame_bgr)
         user_content = [
             {"type": "text", "text": self.user_prompt_template.format(instruction=instruction)},
@@ -180,26 +216,59 @@ class GptLocator:
                 {"role": "user", "content": user_content},
             ],
             max_completion_tokens=self.max_new_tokens,
+            response_format={"type": "text"},
+            reasoning_effort="minimal",
         )
-        if self.temperature is not None:
-            request_kwargs["temperature"] = self.temperature
+        try:
+            resp = self.client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            LOG.error("OpenAI API error: %s", exc)
+            raise
 
-        resp = self.client.chat.completions.create(**request_kwargs)
+        try:
+            LOG.debug("choice0 dump: %s", resp.choices[0].model_dump())
+        except Exception:
+            pass
 
-        content = resp.choices[0].message.content
-        if isinstance(content, list):
-            raw_text = "\n".join(part.get("text", "") for part in content if part.get("type") == "text")
-        else:
-            raw_text = content or ""
+        raw_text = _extract_from_choice(resp.choices[0])
+
+        if not raw_text.strip():
+            LOG.debug("1st response empty. Retrying with minimal text prompt (no image).")
+            alt_kwargs = dict(request_kwargs)
+            alt_kwargs["messages"] = [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Return ONLY JSON {\"position\":\"LEFT|CENTER|RIGHT|UNVISIBLE\","
+                                "\"distance\":\"FAR|MID|NEAR|NONE\",\"confidence\":0-1}."
+                            ),
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "If unsure, use UNVISIBLE/NONE/0.0. No prose.",
+                        }
+                    ],
+                },
+            ]
+            alt_kwargs["max_completion_tokens"] = self.max_new_tokens
+            alt_kwargs["response_format"] = {"type": "text"}
+            alt_kwargs["reasoning_effort"] = "minimal"
+            resp_alt = self.client.chat.completions.create(**alt_kwargs)
+            raw_text = _extract_from_choice(resp_alt.choices[0])
+
         LOG.debug("GPT 生応答: %s", raw_text)
         payload = _parse_json(raw_text)
         if not payload:
-            return SpatialEstimate("CENTER", "FAR", 0.0)
-        return SpatialEstimate(
-            position=str(payload.get("position", "CENTER")).upper(),
-            distance=str(payload.get("distance", "FAR")).upper(),
-            confidence=float(payload.get("confidence", 0.0)),
-        )
+            return SpatialEstimate("UNVISIBLE", "NONE", 0.0), False
+        return _sanitize_estimate(payload), True
 
 
 def _parse_json(text: str) -> Dict[str, object]:
@@ -214,6 +283,25 @@ def _parse_json(text: str) -> Dict[str, object]:
     return {}
 
 
+def _sanitize_estimate(payload: Dict[str, object]) -> SpatialEstimate:
+    pos = str(payload.get("position", "CENTER")).upper()
+    dist = str(payload.get("distance", "FAR")).upper()
+    conf_raw = payload.get("confidence", 0.0)
+    try:
+        conf = float(conf_raw)
+    except Exception:
+        conf = 0.0
+
+    if pos not in ALLOWED_POSITIONS:
+        LOG.debug("位置値 %s を CENTER に補正", pos)
+        pos = "CENTER"
+    if dist not in ALLOWED_DISTANCES:
+        LOG.debug("距離値 %s を FAR に補正", dist)
+        dist = "FAR"
+    conf = max(0.0, min(1.0, conf))
+    return SpatialEstimate(pos, dist, conf)
+
+
 def _decide_command(estimate: SpatialEstimate) -> str:
     pos_cmd = POSITION_RULES.get(estimate.position, "FORWARD")
     if pos_cmd != "FORWARD":
@@ -224,15 +312,13 @@ def _decide_command(estimate: SpatialEstimate) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GPT hybrid controller")
     parser.add_argument("--agent-url", required=True)
-    parser.add_argument("--instruction", required=True)
-    parser.add_argument("--model-id", default="gpt-5-mini-2025-08-07")
     parser.add_argument(
-        "--temperature",
-        type=float,
-        default=None,
-        help="gpt-5 系モデルは温度固定のため指定しても無視されます",
+        "--instruction",
+        default=DEFAULT_INSTRUCTION,
+        help="ロボットへの自然言語指示（未指定なら英語固定文）",
     )
-    parser.add_argument("--max-new-tokens", type=int, default=80)
+    parser.add_argument("--model-id", default="gpt-5-mini-2025-08-07")
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument(
         "--loop-interval",
         type=float,
@@ -242,36 +328,83 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--stop-confirmation-loops",
         type=int,
-        default=2,
-        help="STOP を実行するための連続投票数",
+        default=1,
+        help="STOP 実行に必要な連続投票数 (1 でヒステリシス無効化)",
     )
-    parser.add_argument("--position-hold", type=int, default=2, help="位置判定を切り替えるのに必要な連続回数")
-    parser.add_argument("--distance-hold", type=int, default=2, help="距離判定を切り替えるのに必要な連続回数")
+    parser.add_argument(
+        "--position-hold",
+        type=int,
+        default=1,
+        help="位置判定を切り替えるのに必要な連続回数 (1 でヒステリシス無効化)",
+    )
+    parser.add_argument(
+        "--distance-hold",
+        type=int,
+        default=1,
+        help="距離判定を切り替えるのに必要な連続回数 (1 でヒステリシス無効化)",
+    )
     parser.add_argument("--log-level", default="INFO")
-    parser.add_argument("--min-confidence", type=float, default=0.4)
+    parser.add_argument(
+        "--fallback-command",
+        choices=["FORWARD", "FORWARD_SLOW", "LEFT", "RIGHT", "STOP"],
+        default="STOP",
+        help="VLM 応答が空/解釈不能/低信頼のときに送る安全コマンド",
+    )
+    parser.add_argument(
+        "--save-frames-dir",
+        default="frames",
+        help="取得フレームの保存先ディレクトリ。空文字なら保存しない",
+    )
+    parser.add_argument(
+        "--log-dir",
+        default="logs",
+        help="ログ保存ディレクトリ。空文字にするとファイル出力なし",
+    )
+    parser.add_argument("--log-file", default=None, help="ログファイルを明示指定する場合")
+    parser.add_argument("--min-confidence", type=float, default=0.0)
+    parser.add_argument(
+        "--use-confidence-threshold",
+        action="store_true",
+        help="true のとき min-confidence 未満なら常にフォールバックコマンドを送る",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    handlers = [logging.StreamHandler()]
+
+    log_path = None
+    if args.log_file:
+        log_path = Path(args.log_file)
+    elif args.log_dir:
+        log_path = Path(args.log_dir) / f"gpt-hybrid-{datetime.now():%Y%m%d-%H%M%S}.log"
+
+    if log_path:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
     )
+
+    if log_path:
+        LOG.info("ログをファイルにも保存します: %s", log_path)
     if args.loop_interval < 5.0:
         LOG.warning("loop-interval=%.2f 秒は短すぎます。推論完了まで 10 秒程度かかる前提で設定してください", args.loop_interval)
     client = RaspiAgentClient(args.agent_url)
     locator = GptLocator(
         args.model_id,
         system_prompt=(
-            'Only reply with JSON {"position":"LEFT|CENTER|RIGHT|UNVISIBLE","distance":"FAR|MID|NEAR|NONE",'
-            '"confidence":0-1} describing the yellow TARGET box. Use UNVISIBLE/NONE/0.0 if missing.'
+            "You are a vision classifier for a yellow box labeled TARGET. "
+            "Do NOT give driving commands. Respond ONLY with JSON "
+            '{"position":"LEFT|CENTER|RIGHT|UNVISIBLE","distance":"FAR|MID|NEAR|NONE","confidence":0-1}. '
+            "If the box is absent, use UNVISIBLE/NONE/0.0. No prose, no extra fields."
         ),
-        user_prompt_template=(
-            "Instruction: {instruction}. Look at the camera image and reply only with the JSON described in the "
-            "system prompt for the yellow TARGET box."
-        ),
-        temperature=args.temperature,
+        user_prompt_template="{instruction}",
         max_new_tokens=args.max_new_tokens,
     )
     stabilizer = EstimateHysteresis(
@@ -280,35 +413,57 @@ def main() -> int:
     )
     governor = CommandGovernor(stop_confirmation_loops=args.stop_confirmation_loops)
 
+    frame_dir = None
+    if args.save_frames_dir:
+        run_tag = datetime.now().strftime("%Y%m%d-%H%M%S")
+        frame_dir = Path(args.save_frames_dir) / run_tag
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        LOG.info("フレーム保存先: %s", frame_dir)
+
     try:
         while True:
+            loop_start = time.time()
             frame = client.fetch_frame()
             if frame is None:
                 time.sleep(args.loop_interval)
                 continue
-            estimate = locator.analyse(frame, args.instruction)
-            LOG.debug("raw-estimate=%s", estimate)
-            if estimate.confidence < args.min_confidence:
-                hold = governor.last_command
-                LOG.info(
-                    "信頼度 %.2f < %.2f: 直前のコマンド %s を維持",
-                    estimate.confidence,
-                    args.min_confidence,
-                    hold,
-                )
-                filtered = governor.filter(hold)
+            if frame_dir:
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+                fname = frame_dir / f"frame-{ts}.jpg"
+                cv2.imwrite(str(fname), frame)
+            infer_start = time.time()
+            try:
+                estimate, parsed_ok = locator.analyse(frame, args.instruction)
+            except Exception as exc:
+                LOG.error("VLM 呼び出し失敗: %s", exc)
+                estimate, parsed_ok = SpatialEstimate("UNVISIBLE", "NONE", 0.0), False
+
+            infer_elapsed = (time.time() - infer_start) * 1000
+            smoothed = stabilizer.stabilize(estimate)
+            raw_cmd = _decide_command(smoothed)
+
+            low_conf = args.use_confidence_threshold and (smoothed.confidence < args.min_confidence)
+            parse_fail = (not parsed_ok) or (raw_cmd not in ALLOWED_COMMANDS)
+
+            if low_conf or parse_fail:
+                filtered = governor.filter(args.fallback_command)
+                reason = "low_conf" if low_conf else "parse_fail"
             else:
-                smoothed = stabilizer.stabilize(estimate)
-                cmd = _decide_command(smoothed)
-                LOG.info(
-                    "決定コマンド: %s (pos=%s dist=%s conf=%.2f)",
-                    cmd,
-                    smoothed.position,
-                    smoothed.distance,
-                    smoothed.confidence,
-                )
-                filtered = governor.filter(cmd)
+                filtered = governor.filter(raw_cmd)
+                reason = "rule"
+
+            LOG.info(
+                "before_filter pos=%s dist=%s conf=%.2f raw=%s infer_ms=%.0f reason=%s parsed=%s",
+                smoothed.position,
+                smoothed.distance,
+                smoothed.confidence,
+                raw_cmd,
+                infer_elapsed,
+                reason,
+                parsed_ok,
+            )
             client.send_command(filtered)
+            LOG.info("after_filter=%s loop_ms=%.0f", filtered, (time.time() - loop_start) * 1000)
             time.sleep(args.loop_interval)
     except KeyboardInterrupt:
         LOG.info("停止シグナルを受信。STOP を送信します。")

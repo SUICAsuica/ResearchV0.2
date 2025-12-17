@@ -1,4 +1,4 @@
-"""GPT版ダイレクト制御コントローラ（モーター制御あり）。
+"""GPT版ダイレクト制御コントローラ（完成版：今後変更しない）。
 
 - raspi_agent からフレームを取得
 - OpenAI gpt-5-mini-2025-08-07（もしくは指定モデル）に画像+短い指示を投げ、
@@ -33,7 +33,8 @@ LOG = logging.getLogger(__name__)
 ALLOWED_COMMANDS = ["FORWARD", "FORWARD_SLOW", "LEFT", "RIGHT", "STOP"]
 DEFAULT_INSTRUCTION = (
     "Look at the image. Choose ONE from LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP. "
-    "If the yellow TARGET box is not clearly visible or you are unsure, output FORWARD_SLOW."
+    "- If you see a yellow box (with or without the word TARGET): move toward it (LEFT/RIGHT to center it, FORWARD/FORWARD_SLOW to approach). When it is very close or fills most of the frame, output STOP."
+    "- If NO yellow box is visible at all: output STOP (do not advance blindly)."
 )
 
 
@@ -248,8 +249,8 @@ def main() -> int:
         max_new_tokens=args.max_new_tokens,
         system_prompt=(
             "You output only the next driving command as a single uppercase token from "
-            "{LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP}. If the target is not visible, "
-            "output FORWARD_SLOW to explore safely."
+            "{LEFT, RIGHT, FORWARD, FORWARD_SLOW, STOP}. "
+            "If a yellow box is visible, move toward it. If no yellow box is visible, output STOP."
         ),
         user_prompt_template="{instruction}",
     )

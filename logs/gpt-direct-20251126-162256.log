@@ -1,0 +1,4 @@
+2025-11-26 16:22:56,546 INFO __main__: ログをファイルにも保存します: logs/gpt-direct-20251126-162256.log
+2025-11-26 16:22:56,547 DEBUG __main__: OPENAI_API_KEY loaded (last4=KSkA)
+2025-11-26 16:22:56,574 INFO __main__: フレーム保存先: frames/20251126-162256
+2025-11-26 16:22:56,575 DEBUG urllib3.connectionpool: Starting new HTTP connection (1): 192.168.11.3:8080

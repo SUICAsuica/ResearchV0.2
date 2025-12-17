@@ -28,7 +28,7 @@
    - 映像: `http://<PiのIP>:8899/stream.mjpg`（教材）、または `http://<PiのIP>:8080/frame.jpg` / `/stream.mjpg`（raspi_agent）。
    - 制御: `http://<PiのIP>:5000/?action=command&...`（教材 Flask）または `http://<PiのIP>:8080/command`（raspi_agent）。
    - 研究計測中は `AGENT_URL` を環境変数に設定し、Makefile ターゲット (`pc-direct` / `pc-hybrid`) を用いる。
-   - 現在 (2025-11-12) の Pi IP: **自宅 `192.168.0.13` / 研究室 `192.168.11.11`**。自宅側が DHCP で一時的に `192.168.0.26` になる場合は `env.home.26.sh` を使用する。IP を変更した場合は README と本ファイルの両方を更新すること。
+   - 現在 (2025-11-25) の Pi IP: **自宅 `192.168.0.13` / 研究室 `192.168.11.3`**。自宅側が DHCP で一時的に `192.168.0.26` になる場合は `env.home.26.sh` を使用する。IP を変更した場合は README と本ファイルの両方を更新すること。
 4. **安全運用・ログ**  
    - 開発時は DEBUG ログで VLM 応答・送信コマンドを必ず記録し、実験シートに転記。  
    - WATCHDOG（raspi_agent の 2 秒タイムアウト）で停止する構成を維持し、実空間では常に STOP コマンド即時送出の準備をする。
@@ -51,3 +51,4 @@
 - 2025-11-23: 探索専用コントローラ `pc_controller_explore.py` を追加。指示未指定時は「ターゲットが映っていなくても走査し続ける」デフォルトプロンプトで動作し、LEFT/RIGHT スキャン＋FORWARD_SLOW 前進を交互に行いながら見つけ次第接近・停止する。
 - 2025-11-23: GPT 版の探索ダイレクト制御 `pc_controller_gpt_explore.py` を追加。その後ヒステリシスなしで送信するよう簡素化し、OpenAI VLM からの 1 トークン/JSON をそのまま raspi_agent へ送る構成にした。
 - 2025-11-23: GPT 版ダイレクト制御 `pc_controller_direct_gpt.py` を追加（探索なしプロンプトのみに差し替え）。ロジックは `pc_controller_gpt_explore.py` と同一で、ターゲット不在なら STOP するシンプル指示。
+- 2025-11-25: 研究室 Raspberry Pi の IP を 192.168.11.3 に変更（env.lab.sh, README, 本ファイルを更新）。教示・制御 URL は `http://192.168.11.3:8080` 系に読み替えること。

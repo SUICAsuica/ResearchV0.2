@@ -44,7 +44,7 @@ def build_command_vectors(
     :param slow_ratio: FORWARD_SLOW の速度縮小率。
     """
     # 前進のベース値（完全左右対称）。オフセットは確認後に少しずつ入れる。
-    fwd_base = -0.55
+    fwd_base = -0.35
     fwd_left = fwd_base + steer_offset
     fwd_right = fwd_base - steer_offset
 
@@ -60,8 +60,8 @@ def build_command_vectors(
         # 左モータ主体で操舵する。右モータは一定の弱前進（負が前進）。
         # LEFT: 左モータを少し前進させるが右より遅くして左へアーク。
         # RIGHT: 左モータを逆転させて右へ回頭。過回頭防止のため弱めの逆転に留める。
-        "LEFT": (-0.50, -0.30),
-        "RIGHT": (-0.55, -0.25),
+        "LEFT": (-0.30, -0.35),
+        "RIGHT": (-0.35, -0.30),
     }
 
 
