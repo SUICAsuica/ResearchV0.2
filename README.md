@@ -66,3 +66,145 @@
 - `CarClient(base_url).move("forward", speed=40)`, `move("left")`, `stop()`, `set_servo_angle(10)` など。
 
 （詳細なチュートリアルやオプションの説明は旧 README を参照したい場合に備えて `git show` 等で履歴から取得してください。）
+
+---
+
+## 付録：フルセットアップ手順（SD書き込みから実験開始まで）
+最短フローだけで不安な場合は、ここを上から実施すれば Pi も Mac も揃います。
+
+1. **Raspberry Pi OS を microSD に書き込む（Mac）**
+   - Raspberry Pi Imager → OS: Raspberry Pi OS 64-bit（Liteでも可）。
+   - 「設定」で SSH 有効化・Wi‑Fi SSID/パスワード・ロケール(JP)を事前入力して書き込み。
+
+2. **Pi を起動し IP を確認**
+   - 起動後、Mac から `arp -a | grep raspberrypi` またはルーター画面で IP を確認。
+   - 既定の静的 IP（2025-11-25 時点）は自宅 `192.168.0.13` / 研究室 `192.168.11.3`。DHCP で自宅が `192.168.0.26` になる場合あり。
+   - SSH でログイン: `ssh pi@<PiのIP>`（初期パスは raspberry。初回ログインで必ず変更）。
+
+3. **Pi 側にコードと依存を入れる**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y python3-venv python3-dev git ffmpeg libjpeg-dev
+   mkdir -p ~/laboratory && cd ~/laboratory
+   git clone https://github.com/SUICAsuica/ResearchV0.2.git Researchv2.0
+   cd Researchv2.0/raspycar
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+   - カメラ確認（任意）: `libcamera-still -o test.jpg`
+
+4. **Pi でエージェント起動（研究本番構成）**
+   ```bash
+   cd ~/laboratory/Researchv2.0/raspycar
+   sudo -E PYTHONPATH=/home/pi/laboratory:/home/pi/laboratory/Researchv2.0 \
+     /home/pi/laboratory/Researchv2.0/raspycar/.venv/bin/python \
+     -m raspycar.raspi_agent \
+       --bind 0.0.0.0 --port 8080 \
+       --camera-source 0 \
+       --camera-width 640 --camera-height 480 --camera-fps 5 \
+       --watchdog-timeout 2.0 \
+       --servo-center -50
+   ```
+   - `http://<PiのIP>:8080/frame.jpg` で映像、`/command` に `FORWARD/LEFT/...` を送る。
+
+5. **Mac 側を準備**
+   ```bash
+   cd ~/laboratory/Researchv2.0/raspycar
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   source env.home.sh   # または env.home.26.sh / env.lab.sh
+   ```
+
+6. **実験を開始（GPT ダイレクト）**
+   ```bash
+   make pc-direct-gpt
+   # 必要に応じ: EXTRA_ARGS="--log-level DEBUG --loop-interval 0.5" make pc-direct-gpt
+   ```
+   - ログは `logs/gpt-direct-YYYYMMDD-HHMMSS.log`。STOP を即送れるように準備して運用。
+
+7. **コードを Pi に送る場合**
+   - 軽微変更: `scp -r ~/laboratory/Researchv2.0/raspycar pi@<PiのIP>:/home/pi/laboratory/Researchv2.0/`
+   - もしくは Pi 上で `git pull`（秘密情報を入れた `.env` は追跡しないこと）。
+
+8. **Wi‑Fi 再接続時の IP 再確認**
+   - Pi で `hostname -I`
+   - Mac で `ping <hostname>.local`（mDNS 有効時）
+
+9. **トラブルシュート簡易メモ**
+   - GPIO 権限エラー → 上記のとおり root で `raspi_agent` を起動。
+   - カメラ未認識 → `--camera-source` を 0/1 で切り替え、解像度は 640×480 に戻す。
+   - コマンドが届かない → `curl http://<Pi>:8080/health` で `dry_run` / `last_command` を確認。
+
+---
+
+## 付録：フルセットアップ手順（SD書き込みから実験開始まで）
+最短フローだけで不安な場合は、ここを上から実施すれば Pi も Mac も揃います。
+
+1. **Raspberry Pi OS を microSD に書き込む（Mac）**
+   - Raspberry Pi Imager → OS: Raspberry Pi OS 64-bit（Liteでも可）。
+   - 「設定」で SSH 有効化・Wi‑Fi SSID/パスワード・ロケール(JP)を事前入力して書き込み。
+
+2. **Pi を起動し IP を確認**
+   - 起動後、Mac から `arp -a | grep raspberrypi` またはルーター画面で IP を確認。
+   - 既定の静的 IP（2025-11-25 時点）は自宅 `192.168.0.13` / 研究室 `192.168.11.3`。DHCP で自宅が `192.168.0.26` になる場合あり。
+   - SSH でログイン: `ssh pi@<PiのIP>`（初期パスは raspberry。初回ログインで必ず変更）。
+
+3. **Pi 側にコードと依存を入れる**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y python3-venv python3-dev git ffmpeg libjpeg-dev
+   mkdir -p ~/laboratory && cd ~/laboratory
+   git clone https://github.com/SUICAsuica/ResearchV0.2.git Researchv2.0
+   cd Researchv2.0/raspycar
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+   - カメラ確認（任意）: `libcamera-still -o test.jpg`
+
+4. **Pi でエージェント起動（研究本番構成）**
+   ```bash
+   cd ~/laboratory/Researchv2.0/raspycar
+   sudo -E PYTHONPATH=/home/pi/laboratory:/home/pi/laboratory/Researchv2.0 \
+     /home/pi/laboratory/Researchv2.0/raspycar/.venv/bin/python \
+     -m raspycar.raspi_agent \
+       --bind 0.0.0.0 --port 8080 \
+       --camera-source 0 \
+       --camera-width 640 --camera-height 480 --camera-fps 5 \
+       --watchdog-timeout 2.0 \
+       --servo-center -50
+   ```
+   - `http://<PiのIP>:8080/frame.jpg` で映像、`/command` に `FORWARD/LEFT/...` を送る。
+
+5. **Mac 側を準備**
+   ```bash
+   cd ~/laboratory/Researchv2.0/raspycar
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   source env.home.sh   # または env.home.26.sh / env.lab.sh
+   ```
+
+6. **実験を開始（GPT ダイレクト）**
+   ```bash
+   make pc-direct-gpt
+   # 必要に応じ: EXTRA_ARGS="--log-level DEBUG --loop-interval 0.5" make pc-direct-gpt
+   ```
+   - ログは `logs/gpt-direct-YYYYMMDD-HHMMSS.log`。STOP を即送れるように準備して運用。
+
+7. **コードを Pi に送る場合**
+   - 軽微変更: `scp -r ~/laboratory/Researchv2.0/raspycar pi@<PiのIP>:/home/pi/laboratory/Researchv2.0/`
+   - もしくは Pi 上で `git pull`（秘密情報を入れた `.env` は追跡しないこと）。
+
+8. **Wi‑Fi 再接続時の IP 再確認**
+   - Pi で `hostname -I`
+   - Mac で `ping <hostname>.local`（mDNS 有効時）
+
+9. **トラブルシュート簡易メモ**
+   - GPIO 権限エラー → 上記のとおり root で `raspi_agent` を起動。
+   - カメラ未認識 → `--camera-source` を 0/1 で切り替え、解像度は 640×480 に戻す。
+   - コマンドが届かない → `curl http://<Pi>:8080/health` で `dry_run` / `last_command` を確認。
